@@ -22,7 +22,8 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.DirectMessages
+    GatewayIntentBits.DirectMessages,
+    GatewayIntentBits.MessageContent
   ],
   partials: [Partials.Channel, Partials.GuildMember]
 });
@@ -37,10 +38,6 @@ const VERIFIED_ROLE_NAME = process.env.VERIFIED_ROLE_NAME || 'Membre vérifié';
 const PING_EVERYONE_ON_VERIFY = String(process.env.PING_EVERYONE_ON_VERIFY || 'false').toLowerCase() === 'true';
 
 const pendingVerifications = new Map();
-
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
 
 function normalizePhone(rawPhone) {
   const phone = String(rawPhone || '').replace(/\s+/g, '').replace(/-/g, '').replace(/\./g, '');
@@ -157,14 +154,6 @@ async function createVerificationRequest(member, phone) {
   return record;
 }
 
-async function updatePendingStatus(memberId, status) {
-  const verification = pendingVerifications.get(memberId);
-  if (verification) {
-    verification.status = status;
-    if (status === 'verified') verification.verifiedAt = Date.now();
-  }
-}
-
 async function handleVerifyButton(interaction) {
   const modal = new ModalBuilder()
     .setCustomId(`phone_modal_${interaction.user.id}`)
@@ -253,7 +242,7 @@ async function onPhoneSubmitted(interaction) {
 
   if (!staffChannel || staffChannel.type !== ChannelType.GuildText) {
     await interaction.reply({
-      content: 'Le salon staff n’est pas configuré. Contacte un administrateur.',
+      content: 'Le salon staff n\'est pas configuré. Contacte un administrateur.',
       ephemeral: true
     });
     return;
@@ -356,8 +345,11 @@ async function onCodeSubmitted(interaction) {
   }
 }
 
-client.on('ready', () => {
-  console.log(`Bot prêt : ${client.user.tag}`);
+client.once('ready', () => {
+  console.log(`✅ Bot prêt : ${client.user.tag}`);
+  console.log(`📡 Serveur ID : ${process.env.GUILD_ID}`);
+  console.log(`💬 Salon staff : ${STAFF_CHANNEL_ID}`);
+  console.log(`📝 Salon logs : ${LOGS_CHANNEL_ID}`);
 });
 
 client.on('messageCreate', async (message) => {
@@ -370,7 +362,14 @@ client.on('messageCreate', async (message) => {
   const command = args[0]?.toLowerCase();
 
   if (command === 'panel') {
+    console.log(`📢 Commande panel reçue de ${message.author.tag}`);
+
     if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
+      console.log(`❌ ${message.author.tag} n'est pas admin`);
+      await message.reply({
+        content: 'Tu n\'as pas les permissions pour utiliser cette commande.',
+        ephemeral: true
+      }).catch(() => {});
       return;
     }
 
@@ -385,10 +384,19 @@ client.on('messageCreate', async (message) => {
       )
       .setTimestamp();
 
-    await message.channel.send({
-      embeds: [panelEmbed],
-      components: [createPanelButtons()]
-    });
+    try {
+      await message.channel.send({
+        embeds: [panelEmbed],
+        components: [createPanelButtons()]
+      });
+      console.log(`✅ Panel envoyé avec succès`);
+    } catch (error) {
+      console.error(`❌ Erreur envoi panel : ${error.message}`);
+      await message.reply({
+        content: 'Erreur lors de l\'envoi du panel.',
+        ephemeral: true
+      }).catch(() => {});
+    }
   }
 });
 
@@ -416,7 +424,7 @@ client.on('interactionCreate', async (interaction) => {
       const verification = pendingVerifications.get(targetId);
 
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
@@ -450,7 +458,7 @@ client.on('interactionCreate', async (interaction) => {
       const verification = pendingVerifications.get(targetId);
 
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
@@ -467,7 +475,7 @@ client.on('interactionCreate', async (interaction) => {
       try {
         await member.send(`Votre code de vérification est : **${code}**\nEntrez-le dans le panel par le bouton **Code**.`);
       } catch (error) {
-        await interaction.reply({ content: 'Le membre a bloqué ses MP. Le code n’a pas pu être envoyé.', ephemeral: true });
+        await interaction.reply({ content: 'Le membre a bloqué ses MP. Le code n\'a pas pu être envoyé.', ephemeral: true });
         return;
       }
 
@@ -491,7 +499,7 @@ client.on('interactionCreate', async (interaction) => {
       const verification = pendingVerifications.get(targetId);
 
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
@@ -517,5 +525,5 @@ client.on('interactionCreate', async (interaction) => {
 client.login(process.env.DISCORD_TOKEN);
 
 app.listen(PORT, () => {
-  console.log(`Service web prêt sur http://localhost:${PORT}`);
+  console.log(`🚀 Service web prêt sur http://localhost:${PORT}`);
 });
