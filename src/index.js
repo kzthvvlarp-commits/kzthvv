@@ -63,7 +63,8 @@ function maskPhone(rawPhone) {
   if (!phone) return 'Inconnu';
   const digits = phone.replace(/\D/g, '');
   if (digits.length <= 4) return '*'.repeat(digits.length);
-  const first = digits.slice(0, 2);\n  const last = digits.slice(-2);
+  const first = digits.slice(0, 2);
+  const last = digits.slice(-2);
   return `${first}******${last}`;
 }
 
@@ -381,7 +382,7 @@ client.on('interactionCreate', async (interaction) => {
       const targetId = interaction.customId.replace('claim_verification_', '');
       const verification = pendingVerifications.get(getKey(targetId));
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
@@ -396,13 +397,13 @@ client.on('interactionCreate', async (interaction) => {
       const targetId = interaction.customId.replace('request_code_', '');
       const verification = pendingVerifications.get(getKey(targetId));
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
       const ok = await sendCodeRequestToMember(targetId);
       if (!ok) {
-        await interaction.reply({ content: 'Impossible d’envoyer la demande de code au membre.', ephemeral: true });
+        await interaction.reply({ content: 'Impossible d\'envoyer la demande de code au membre.', ephemeral: true });
         return;
       }
 
@@ -414,7 +415,7 @@ client.on('interactionCreate', async (interaction) => {
       const memberId = interaction.customId.replace('code_member_', '');
       const verification = pendingVerifications.get(getKey(memberId));
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
         return;
       }
 
@@ -447,7 +448,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId.startsWith('refuse_member_')) {
       const memberId = interaction.customId.replace('refuse_member_', '');
       await refuseVerification(memberId);
-      await interaction.reply({ content: `La vérification de <@${memberId}> a été refusée et l'utilisateur a été banni.`, ephemeral: true });
+      await interaction.reply({ content: `La vérification de <@${memberId}> a été refusée et l\'utilisateur a été banni.`, ephemeral: true });
       return;
     }
 
@@ -465,7 +466,7 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId.startsWith('refuse_verification_')) {
       const targetId = interaction.customId.replace('refuse_verification_', '');
       await refuseVerification(targetId);
-      await interaction.reply({ content: `La vérification de <@${targetId}> a été refusée et l'utilisateur a été banni.`, ephemeral: true });
+      await interaction.reply({ content: `La vérification de <@${targetId}> a été refusée et l\'utilisateur a été banni.`, ephemeral: true });
       return;
     }
   }
