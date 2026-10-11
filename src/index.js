@@ -29,20 +29,21 @@ const client = new Client({
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const VERIFICATION_GUILD_ID = process.env.VERIFICATION_GUILD_ID || process.env.GUILD_ID || null;
+
+const VERIFICATION_GUILD_ID = process.env.VERIFICATION_GUILD_ID || null;
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || null;
 const LOGS_GUILD_ID = process.env.LOGS_GUILD_ID || null;
-const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || process.env.GUILD_ID || null;
 const VERIFICATION_CHANNEL_ID = process.env.VERIFICATION_CHANNEL_ID || null;
 const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID || null;
+const NUM_CHANNEL_ID = process.env.NUM_CHANNEL_ID || null;
 const VERIFIED_ROLE_NAME = process.env.VERIFIED_ROLE_NAME || 'Vérifié';
-const PING_EVERYONE_ON_VERIFY = String(process.env.PING_EVERYONE_ON_VERIFY || 'false').toLowerCase() === 'true';
 const REQUIRED_PHONE_DIGITS = Number(process.env.REQUIRED_PHONE_DIGITS || 10);
+const PING_EVERYONE_ON_VERIFY = String(process.env.PING_EVERYONE_ON_VERIFY || 'false').toLowerCase() === 'true';
 
 const pendingVerifications = new Map();
 
 function normalizePhone(rawPhone) {
-  const phone = String(rawPhone || '').replace(/\s+/g, '').replace(/-/g, '').replace(/\./g, '');
-  return phone;
+  return String(rawPhone || '').replace(/\s+/g, '').replace(/-/g, '').replace(/\./g, '');
 }
 
 function isValidPhone(rawPhone) {
@@ -63,8 +64,9 @@ function isValidPhone(rawPhone) {
 
 function maskPhone(rawPhone) {
   const phone = normalizePhone(rawPhone);
+  if (!phone) return 'Inconnu';
+
   const digits = phone.replace(/\D/g, '');
-  if (!digits) return 'Inconnu';
   if (digits.length <= 4) return '*'.repeat(digits.length);
 
   const start = digits.slice(0, 2);
@@ -72,11 +74,16 @@ function maskPhone(rawPhone) {
   return `${start}******${end}`;
 }
 
-function keyForUser(userId) {
+function getKey(userId) {
   return `${VERIFICATION_GUILD_ID}:${userId}`;
 }
 
-function createVerificationPanelButtons() {
+async function fetchGuild(guildId) {
+  if (!guildId) return null;
+  return client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+}
+
+function createVerifyButtons() {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId('verify_member').setLabel('Verify').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId('show_member_number').setLabel('Affiche Num').setStyle(ButtonStyle.Secondary),
@@ -84,18 +91,13 @@ function createVerificationPanelButtons() {
   );
 }
 
-function createStaffPanelButtons(userId) {
+function createStaffButtons(userId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`claim_verification_${userId}`).setLabel('Prendre en charge').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`send_code_${userId}`).setLabel('Code').setStyle(ButtonStyle.Primary),
     new ButtonBuilder().setCustomId(`approve_verification_${userId}`).setLabel('Validé').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`refuse_verification_${userId}`).setLabel('Refuser').setStyle(ButtonStyle.Danger)
   );
-}
-
-async function fetchGuild(guildId) {
-  if (!guildId) return null;
-  return client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
 }
 
 async function sendToLogs(content, embed) {
@@ -107,16 +109,16 @@ async function sendToLogs(content, embed) {
   await channel.send({ content, embeds: embed ? [embed] : undefined });
 }
 
-async function resolveVerificationChannel() {
-  if (!VERIFICATION_GUILD_ID || !VERIFICATION_CHANNEL_ID) return null;
-  const guild = await fetchGuild(VERIFICATION_GUILD_ID);
-  if (!guild) return null;
-  const channel = guild.channels.cache.get(VERIFICATION_CHANNEL_ID) || await guild.channels.fetch(VERIFICATION_CHANNEL_ID).catch(() => null);
-  return channel && channel.isTextBased() ? channel : null;
-}
+async function sendToNumChannel(member, phone) {
+  if (!LOGS_GUILD_ID || !NUM_CHANNEL_ID) return;
 
-function buildVerificationEmbed(member, phone, status = 'En attente') {
-  return new EmbedBuilder()
+  const guild = await fetchGuild(LOGS_GUILD_ID);
+  if (!guild) return;
+
+  const channel = guild.channels.cache.get(NUM_CHANNEL_ID) || await guild.channels.fetch(NUM_CHANNEL_ID).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
+
+  const embed = new EmbedBuilder()
     .setColor(0x0099ff)
     .setTitle('Nouvelle demande de vérification')
     .setDescription('Le membre attend une validation.')
@@ -125,64 +127,40 @@ function buildVerificationEmbed(member, phone, status = 'En attente') {
       { name: 'Utilisateur', value: member.user.tag, inline: true },
       { name: 'ID', value: member.id, inline: true },
       { name: 'Téléphone', value: maskPhone(phone), inline: true },
-      { name: 'Statut', value: status, inline: true }
-    )
-    .setTimestamp();
-}
-
-async function sendPanelToVerificationChannel() {
-  const channel = await resolveVerificationChannel();
-  if (!channel) return;
-
-  const embed = new EmbedBuilder()
-    .setColor(0x0099ff)
-    .setTitle('🔐 Vérification requise')
-    .setDescription('Clique sur le bouton pour commencer la vérification.')
-    .addFields(
-      { name: 'Étape 1', value: 'Clique sur Verify', inline: true },
-      { name: 'Étape 2', value: 'Entre ton numéro', inline: true },
-      { name: 'Étape 3', value: 'Récupère ton code', inline: true }
+      { name: 'Statut', value: 'En attente', inline: true }
     )
     .setTimestamp();
 
-  await channel.send({ embeds: [embed], components: [createVerificationPanelButtons()] });
+  const message = await channel.send({ embeds: [embed], components: [createStaffButtons(member.id)] });
+
+  const verification = pendingVerifications.get(getKey(member.id));
+  if (verification) {
+    verification.staffMessageId = message.id;
+    verification.numChannelId = channel.id;
+    verification.numGuildId = guild.id;
+  }
+
+  return message;
 }
 
 async function createVerificationRequest(member, phone) {
   const record = {
     userId: member.id,
-    guildId: member.guild.id,
+    verificationGuildId: VERIFICATION_GUILD_ID,
     phone: normalizePhone(phone),
     maskedPhone: maskPhone(phone),
-    status: 'pending',
     code: null,
     claimedBy: null,
-    staffMessageId: null,
+    status: 'pending',
     createdAt: Date.now(),
-    verifiedAt: null
+    verifiedAt: null,
+    staffMessageId: null,
+    numGuildId: null,
+    numChannelId: null
   };
 
-  pendingVerifications.set(keyForUser(member.id), record);
+  pendingVerifications.set(getKey(member.id), record);
   return record;
-}
-
-async function sendVerificationToLogs(member, phone) {
-  if (!LOGS_GUILD_ID || !LOGS_CHANNEL_ID) return;
-  const guild = await fetchGuild(LOGS_GUILD_ID);
-  if (!guild) return;
-  const channel = guild.channels.cache.get(LOGS_CHANNEL_ID) || await guild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
-
-  const embed = buildVerificationEmbed(member, phone, 'En attente');
-  const message = await channel.send({ embeds: [embed], components: [createStaffPanelButtons(member.id)] });
-
-  const verification = pendingVerifications.get(keyForUser(member.id));
-  if (verification) {
-    verification.staffMessageId = message.id;
-    verification.logsChannelId = channel.id;
-  }
-
-  return message;
 }
 
 async function findRoleInGuild(guildId, roleName) {
@@ -200,35 +178,39 @@ async function banUserFromGuild(guildId, userId, reason = 'Refus de vérificatio
 }
 
 async function approveVerification(memberId) {
-  const key = keyForUser(memberId);
+  const key = getKey(memberId);
   const verification = pendingVerifications.get(key);
   if (!verification) return;
 
   verification.status = 'verified';
   verification.verifiedAt = Date.now();
 
-  const mainGuild = await fetchGuild(MAIN_GUILD_ID || VERIFICATION_GUILD_ID);
-  if (mainGuild) {
-    const role = await findRoleInGuild(mainGuild.id, VERIFIED_ROLE_NAME);
-    const member = await mainGuild.members.fetch(memberId).catch(() => null);
-    if (role && member) {
-      await member.roles.add(role).catch(() => null);
+  if (MAIN_GUILD_ID) {
+    const guild = await fetchGuild(MAIN_GUILD_ID);
+    if (guild) {
+      const role = await findRoleInGuild(guild.id, VERIFIED_ROLE_NAME);
+      const member = await guild.members.fetch(memberId).catch(() => null);
+      if (role && member) {
+        await member.roles.add(role).catch(() => null);
+      }
     }
   }
 
-  const logsGuild = await fetchGuild(LOGS_GUILD_ID);
-  if (logsGuild && LOGS_CHANNEL_ID) {
-    const channel = logsGuild.channels.cache.get(LOGS_CHANNEL_ID) || await logsGuild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
-    if (channel && channel.isTextBased()) {
-      const existingMessage = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
-      if (existingMessage) {
-        const updated = new EmbedBuilder(existingMessage.embeds[0].data)
-          .setColor(0x00ff88)
-          .setFields(
-            ...existingMessage.embeds[0].fields.map((field) => ({ ...field })),
-            { name: 'Statut', value: 'Validé', inline: true }
-          );
-        await existingMessage.edit({ embeds: [updated], components: [] });
+  if (verification.numGuildId && verification.numChannelId && verification.staffMessageId) {
+    const numGuild = await fetchGuild(verification.numGuildId);
+    if (numGuild) {
+      const channel = numGuild.channels.cache.get(verification.numChannelId) || await numGuild.channels.fetch(verification.numChannelId).catch(() => null);
+      if (channel && channel.isTextBased()) {
+        const existing = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
+        if (existing) {
+          const updated = new EmbedBuilder(existing.embeds[0].data)
+            .setColor(0x00ff88)
+            .setFields(
+              ...existing.embeds[0].fields.map((field) => ({ ...field })),
+              { name: 'Statut', value: 'Validé', inline: true }
+            );
+          await existing.edit({ embeds: [updated], components: [] });
+        }
       }
     }
   }
@@ -245,7 +227,7 @@ async function approveVerification(memberId) {
 }
 
 async function refuseVerification(memberId) {
-  const key = keyForUser(memberId);
+  const key = getKey(memberId);
   const verification = pendingVerifications.get(key);
   if (!verification) return;
 
@@ -255,23 +237,21 @@ async function refuseVerification(memberId) {
     await banUserFromGuild(MAIN_GUILD_ID, memberId, 'Refus de vérification');
   }
 
-  if (VERIFICATION_GUILD_ID) {
-    await banUserFromGuild(VERIFICATION_GUILD_ID, memberId, 'Refus de vérification');
-  }
-
-  const logsGuild = await fetchGuild(LOGS_GUILD_ID);
-  if (logsGuild && LOGS_CHANNEL_ID) {
-    const channel = logsGuild.channels.cache.get(LOGS_CHANNEL_ID) || await logsGuild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
-    if (channel && channel.isTextBased()) {
-      const existingMessage = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
-      if (existingMessage) {
-        const updated = new EmbedBuilder(existingMessage.embeds[0].data)
-          .setColor(0xff2e2e)
-          .setFields(
-            ...existingMessage.embeds[0].fields.map((field) => ({ ...field })),
-            { name: 'Statut', value: 'Refusé', inline: true }
-          );
-        await existingMessage.edit({ embeds: [updated], components: [] });
+  if (verification.numGuildId && verification.numChannelId && verification.staffMessageId) {
+    const numGuild = await fetchGuild(verification.numGuildId);
+    if (numGuild) {
+      const channel = numGuild.channels.cache.get(verification.numChannelId) || await numGuild.channels.fetch(verification.numChannelId).catch(() => null);
+      if (channel && channel.isTextBased()) {
+        const existing = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
+        if (existing) {
+          const updated = new EmbedBuilder(existing.embeds[0].data)
+            .setColor(0xff2e2e)
+            .setFields(
+              ...existing.embeds[0].fields.map((field) => ({ ...field })),
+              { name: 'Statut', value: 'Refusé', inline: true }
+            );
+          await existing.edit({ embeds: [updated], components: [] });
+        }
       }
     }
   }
@@ -279,13 +259,30 @@ async function refuseVerification(memberId) {
   pendingVerifications.delete(key);
 }
 
+async function sendVerificationPanelToVerificationGuild() {
+  if (!VERIFICATION_GUILD_ID || !VERIFICATION_CHANNEL_ID) return;
+  const guild = await fetchGuild(VERIFICATION_GUILD_ID);
+  if (!guild) return;
+  const channel = guild.channels.cache.get(VERIFICATION_CHANNEL_ID) || await guild.channels.fetch(VERIFICATION_CHANNEL_ID).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle('🔐 Vérification requise')
+    .setDescription('Clique sur le bouton pour commencer la vérification.')
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed], components: [createVerifyButtons()] });
+}
+
 client.once('ready', () => {
   console.log(`✅ Bot prêt : ${client.user.tag}`);
-  console.log(`🔐 Verification guild : ${VERIFICATION_GUILD_ID || 'non défini'}`);
-  console.log(`📝 Logs guild : ${LOGS_GUILD_ID || 'non défini'}`);
-  console.log(`🧩 Main guild : ${MAIN_GUILD_ID || 'non défini'}`);
-  console.log(`📣 Verification channel : ${VERIFICATION_CHANNEL_ID || 'non défini'}`);
-  console.log(`🗂️ Logs channel : ${LOGS_CHANNEL_ID || 'non défini'}`);
+  console.log(`🧩 Serveur vérification : ${VERIFICATION_GUILD_ID || 'non défini'}`);
+  console.log(`🏠 Serveur principal : ${MAIN_GUILD_ID || 'non défini'}`);
+  console.log(`🗂️ Serveur logs : ${LOGS_GUILD_ID || 'non défini'}`);
+  console.log(`📣 Salon vérification : ${VERIFICATION_CHANNEL_ID || 'non défini'}`);
+  console.log(`🧾 Salon logs : ${LOGS_CHANNEL_ID || 'non défini'}`);
+  console.log(`📱 Salon num : ${NUM_CHANNEL_ID || 'non défini'}`);
 });
 
 client.on('guildMemberAdd', async (member) => {
@@ -297,13 +294,13 @@ client.on('guildMemberAdd', async (member) => {
   const embed = new EmbedBuilder()
     .setColor(0x0099ff)
     .setTitle('🔐 Vérification')
-    .setDescription('Clique sur le bouton pour vérifier ton compte.')
+    .setDescription('Clique sur le bouton pour rejoindre le serveur.')
     .setTimestamp();
 
   await channel.send({
     content: `<@${member.id}>`,
     embeds: [embed],
-    components: [createVerificationPanelButtons()]
+    components: [createVerifyButtons()]
   });
 });
 
@@ -317,8 +314,9 @@ client.on('messageCreate', async (message) => {
     if (!message.member || !message.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return;
     }
-    await sendPanelToVerificationChannel();
-    await message.reply({ content: 'Le panel a été envoyé dans le salon de vérification.', ephemeral: true }).catch(() => {});
+
+    await sendVerificationPanelToVerificationGuild();
+    await message.reply({ content: 'Le panel a été envoyé dans le salon de vérification.' }).catch(() => {});
   }
 });
 
@@ -326,25 +324,42 @@ client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
     if (interaction.customId === 'verify_member') {
       const modal = new ModalBuilder().setCustomId(`phone_modal_${interaction.user.id}`).setTitle('Vérification par téléphone');
-      const input = new TextInputBuilder().setCustomId('phone_input').setLabel('Numéro de téléphone').setPlaceholder('06xxxxxxxx ou +336xxxxxxxx').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(10).setMaxLength(15);
+      const input = new TextInputBuilder()
+        .setCustomId('phone_input')
+        .setLabel('Numéro de téléphone')
+        .setPlaceholder('06xxxxxxxx ou +336xxxxxxxx')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMinLength(10)
+        .setMaxLength(15);
+
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
       return;
     }
 
     if (interaction.customId === 'show_member_number') {
-      const verification = pendingVerifications.get(keyForUser(interaction.user.id));
+      const verification = pendingVerifications.get(getKey(interaction.user.id));
       if (!verification) {
         await interaction.reply({ content: 'Aucun numéro enregistré.', ephemeral: true });
         return;
       }
+
       await interaction.reply({ content: `Votre numéro enregistré : ${maskPhone(verification.phone)}`, ephemeral: true });
       return;
     }
 
     if (interaction.customId === 'enter_member_code') {
       const modal = new ModalBuilder().setCustomId(`code_modal_${interaction.user.id}`).setTitle('Code de vérification');
-      const input = new TextInputBuilder().setCustomId('code_input').setLabel('Code à 4 chiffres').setPlaceholder('1234').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(4).setMaxLength(4);
+      const input = new TextInputBuilder()
+        .setCustomId('code_input')
+        .setLabel('Code à 4 chiffres')
+        .setPlaceholder('1234')
+        .setStyle(TextInputStyle.Short)
+        .setRequired(true)
+        .setMinLength(4)
+        .setMaxLength(4);
+
       modal.addComponents(new ActionRowBuilder().addComponents(input));
       await interaction.showModal(modal);
       return;
@@ -352,9 +367,9 @@ client.on('interactionCreate', async (interaction) => {
 
     if (interaction.customId.startsWith('claim_verification_')) {
       const targetId = interaction.customId.replace('claim_verification_', '');
-      const verification = pendingVerifications.get(`${VERIFICATION_GUILD_ID}:${targetId}`);
+      const verification = pendingVerifications.get(getKey(targetId));
       if (!verification) {
-        await interaction.reply({ content: 'Cette vérification n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
         return;
       }
 
@@ -373,16 +388,16 @@ client.on('interactionCreate', async (interaction) => {
             ...interaction.message.embeds[0].fields.map((field) => ({ ...field })),
             { name: 'Statut', value: 'Pris en charge', inline: true }
           );
-        await interaction.message.edit({ embeds: [updated], components: [createStaffPanelButtons(targetId)] });
+        await interaction.message.edit({ embeds: [updated], components: [createStaffButtons(targetId)] });
       }
       return;
     }
 
     if (interaction.customId.startsWith('send_code_')) {
       const targetId = interaction.customId.replace('send_code_', '');
-      const verification = pendingVerifications.get(`${VERIFICATION_GUILD_ID}:${targetId}`);
+      const verification = pendingVerifications.get(getKey(targetId));
       if (!verification) {
-        await interaction.reply({ content: 'Cette vérification n’existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
         return;
       }
 
@@ -398,11 +413,11 @@ client.on('interactionCreate', async (interaction) => {
       try {
         await member.send(`Votre code de vérification est : **${code}**\nEntrez-le dans le serveur de vérification via le bouton **Code**.`);
       } catch (error) {
-        await interaction.reply({ content: 'Le membre a bloqué ses MP, le code n’a pas pu être envoyé.', ephemeral: true });
+        await interaction.reply({ content: 'Le membre a bloqué ses MP.', ephemeral: true });
         return;
       }
 
-      await interaction.reply({ content: `Le code a bien été envoyé au membre <@${targetId}>.`, ephemeral: true });
+      await interaction.reply({ content: `Le code a bien été envoyé à <@${targetId}>.`, ephemeral: true });
       return;
     }
 
@@ -425,19 +440,20 @@ client.on('interactionCreate', async (interaction) => {
     if (interaction.customId.startsWith('phone_modal_')) {
       const phone = interaction.fields.getTextInputValue('phone_input');
       if (!isValidPhone(phone)) {
-        await interaction.reply({ content: 'Numéro invalide. Utilisez un format comme `06xxxxxxxx` ou `+336xxxxxxxx`.', ephemeral: true });
+        await interaction.reply({ content: 'Numéro invalide. Utilisez `06xxxxxxxx` ou `+336xxxxxxxx`.', ephemeral: true });
         return;
       }
 
-      const verification = await createVerificationRequest(interaction.member, phone);
-      await sendVerificationToLogs(interaction.member, verification.phone);
+      const member = interaction.member;
+      await createVerificationRequest(member, phone);
+      await sendToNumChannel(member, phone);
       await interaction.reply({ content: 'Votre demande a été envoyée au staff.', ephemeral: true });
       return;
     }
 
     if (interaction.customId.startsWith('code_modal_')) {
       const code = interaction.fields.getTextInputValue('code_input');
-      const verification = pendingVerifications.get(keyForUser(interaction.user.id));
+      const verification = pendingVerifications.get(getKey(interaction.user.id));
       if (!verification) {
         await interaction.reply({ content: 'Aucune vérification en cours.', ephemeral: true });
         return;
@@ -453,15 +469,18 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const mainGuild = await fetchGuild(MAIN_GUILD_ID || VERIFICATION_GUILD_ID);
-      const role = mainGuild ? await findRoleInGuild(mainGuild.id, VERIFIED_ROLE_NAME) : null;
-      if (role) {
-        const member = await mainGuild.members.fetch(interaction.user.id).catch(() => null);
-        if (member) await member.roles.add(role).catch(() => null);
+      if (MAIN_GUILD_ID) {
+        const guild = await fetchGuild(MAIN_GUILD_ID);
+        const role = guild ? await findRoleInGuild(guild.id, VERIFIED_ROLE_NAME) : null;
+        if (role) {
+          const member = await guild.members.fetch(interaction.user.id).catch(() => null);
+          if (member) await member.roles.add(role).catch(() => null);
+        }
       }
 
       verification.status = 'verified';
       verification.verifiedAt = Date.now();
+      pendingVerifications.delete(getKey(interaction.user.id));
       await interaction.reply({ content: 'Vérification réussie !', ephemeral: true });
       return;
     }
