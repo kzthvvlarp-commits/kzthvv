@@ -29,13 +29,14 @@ const client = new Client({
 });
 
 const PORT = Number(process.env.PORT || 3000);
-const VERIFY_TIMEOUT_MINUTES = Number(process.env.VERIFY_TIMEOUT_MINUTES || 10);
-const CODE_TIMEOUT_MINUTES = Number(process.env.CODE_TIMEOUT_MINUTES || 10);
-const REQUIRED_PHONE_DIGITS = Number(process.env.REQUIRED_PHONE_DIGITS || 10);
-const STAFF_CHANNEL_ID = process.env.STAFF_CHANNEL_ID;
-const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID;
-const VERIFIED_ROLE_NAME = process.env.VERIFIED_ROLE_NAME || 'Membre vérifié';
+const VERIFICATION_GUILD_ID = process.env.VERIFICATION_GUILD_ID || process.env.GUILD_ID || null;
+const LOGS_GUILD_ID = process.env.LOGS_GUILD_ID || null;
+const MAIN_GUILD_ID = process.env.MAIN_GUILD_ID || process.env.GUILD_ID || null;
+const VERIFICATION_CHANNEL_ID = process.env.VERIFICATION_CHANNEL_ID || null;
+const LOGS_CHANNEL_ID = process.env.LOGS_CHANNEL_ID || null;
+const VERIFIED_ROLE_NAME = process.env.VERIFIED_ROLE_NAME || 'Vérifié';
 const PING_EVERYONE_ON_VERIFY = String(process.env.PING_EVERYONE_ON_VERIFY || 'false').toLowerCase() === 'true';
+const REQUIRED_PHONE_DIGITS = Number(process.env.REQUIRED_PHONE_DIGITS || 10);
 
 const pendingVerifications = new Map();
 
@@ -46,7 +47,6 @@ function normalizePhone(rawPhone) {
 
 function isValidPhone(rawPhone) {
   const phone = normalizePhone(rawPhone);
-
   if (!phone) return false;
 
   if (phone.startsWith('+33')) {
@@ -63,9 +63,8 @@ function isValidPhone(rawPhone) {
 
 function maskPhone(rawPhone) {
   const phone = normalizePhone(rawPhone);
-  if (!phone) return 'Inconnu';
-
   const digits = phone.replace(/\D/g, '');
+  if (!digits) return 'Inconnu';
   if (digits.length <= 4) return '*'.repeat(digits.length);
 
   const start = digits.slice(0, 2);
@@ -73,392 +72,317 @@ function maskPhone(rawPhone) {
   return `${start}******${end}`;
 }
 
-function createPanelButtons() {
+function keyForUser(userId) {
+  return `${VERIFICATION_GUILD_ID}:${userId}`;
+}
+
+function createVerificationPanelButtons() {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId('verify_member')
-      .setLabel('Verify')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId('show_member_number')
-      .setLabel('Affiche Num')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId('enter_member_code')
-      .setLabel('Code')
-      .setStyle(ButtonStyle.Success)
+    new ButtonBuilder().setCustomId('verify_member').setLabel('Verify').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId('show_member_number').setLabel('Affiche Num').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId('enter_member_code').setLabel('Code').setStyle(ButtonStyle.Success)
   );
 }
 
-function createStaffButtons(userId) {
+function createStaffPanelButtons(userId) {
   return new ActionRowBuilder().addComponents(
-    new ButtonBuilder()
-      .setCustomId(`claim_verification_${userId}`)
-      .setLabel('Claim')
-      .setStyle(ButtonStyle.Secondary),
-    new ButtonBuilder()
-      .setCustomId(`send_code_${userId}`)
-      .setLabel('Envoyer le code')
-      .setStyle(ButtonStyle.Primary),
-    new ButtonBuilder()
-      .setCustomId(`refuse_verification_${userId}`)
-      .setLabel('Refuser')
-      .setStyle(ButtonStyle.Danger)
+    new ButtonBuilder().setCustomId(`claim_verification_${userId}`).setLabel('Prendre en charge').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`send_code_${userId}`).setLabel('Code').setStyle(ButtonStyle.Primary),
+    new ButtonBuilder().setCustomId(`approve_verification_${userId}`).setLabel('Validé').setStyle(ButtonStyle.Success),
+    new ButtonBuilder().setCustomId(`refuse_verification_${userId}`).setLabel('Refuser').setStyle(ButtonStyle.Danger)
   );
 }
 
-async function getGuild() {
-  return client.guilds.cache.get(process.env.GUILD_ID) || await client.guilds.fetch(process.env.GUILD_ID).catch(() => null);
+async function fetchGuild(guildId) {
+  if (!guildId) return null;
+  return client.guilds.cache.get(guildId) || await client.guilds.fetch(guildId).catch(() => null);
+}
+
+async function sendToLogs(content, embed) {
+  if (!LOGS_GUILD_ID || !LOGS_CHANNEL_ID) return;
+  const guild = await fetchGuild(LOGS_GUILD_ID);
+  if (!guild) return;
+  const channel = guild.channels.cache.get(LOGS_CHANNEL_ID) || await guild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
+  await channel.send({ content, embeds: embed ? [embed] : undefined });
+}
+
+async function resolveVerificationChannel() {
+  if (!VERIFICATION_GUILD_ID || !VERIFICATION_CHANNEL_ID) return null;
+  const guild = await fetchGuild(VERIFICATION_GUILD_ID);
+  if (!guild) return null;
+  const channel = guild.channels.cache.get(VERIFICATION_CHANNEL_ID) || await guild.channels.fetch(VERIFICATION_CHANNEL_ID).catch(() => null);
+  return channel && channel.isTextBased() ? channel : null;
 }
 
 function buildVerificationEmbed(member, phone, status = 'En attente') {
   return new EmbedBuilder()
     .setColor(0x0099ff)
-    .setTitle('Nouvelle vérification')
-    .setDescription('Une demande de vérification a été soumise.')
+    .setTitle('Nouvelle demande de vérification')
+    .setDescription('Le membre attend une validation.')
     .setThumbnail(member.displayAvatarURL({ dynamic: true, size: 256 }))
     .addFields(
-      { name: 'Utilisateur', value: `${member.user.tag}`, inline: true },
-      { name: 'ID', value: `${member.id}`, inline: true },
-      { name: 'Téléphone', value: `${maskPhone(phone)}`, inline: true },
+      { name: 'Utilisateur', value: member.user.tag, inline: true },
+      { name: 'ID', value: member.id, inline: true },
+      { name: 'Téléphone', value: maskPhone(phone), inline: true },
       { name: 'Statut', value: status, inline: true }
     )
     .setTimestamp();
 }
 
-async function sendToLogs(content, embed) {
-  if (!LOGS_CHANNEL_ID) return;
+async function sendPanelToVerificationChannel() {
+  const channel = await resolveVerificationChannel();
+  if (!channel) return;
 
-  const channel = await client.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
-  if (!channel || !channel.isTextBased()) return;
+  const embed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle('🔐 Vérification requise')
+    .setDescription('Clique sur le bouton pour commencer la vérification.')
+    .addFields(
+      { name: 'Étape 1', value: 'Clique sur Verify', inline: true },
+      { name: 'Étape 2', value: 'Entre ton numéro', inline: true },
+      { name: 'Étape 3', value: 'Récupère ton code', inline: true }
+    )
+    .setTimestamp();
 
-  await channel.send({ content, embeds: embed ? [embed] : undefined });
+  await channel.send({ embeds: [embed], components: [createVerificationPanelButtons()] });
 }
 
 async function createVerificationRequest(member, phone) {
-  const normalized = normalizePhone(phone);
   const record = {
     userId: member.id,
     guildId: member.guild.id,
-    phone: normalized,
-    maskedPhone: maskPhone(normalized),
+    phone: normalizePhone(phone),
+    maskedPhone: maskPhone(phone),
+    status: 'pending',
     code: null,
     claimedBy: null,
-    status: 'pending',
+    staffMessageId: null,
     createdAt: Date.now(),
-    expiresAt: Date.now() + VERIFY_TIMEOUT_MINUTES * 60 * 1000,
-    codeExpiresAt: Date.now() + CODE_TIMEOUT_MINUTES * 60 * 1000
+    verifiedAt: null
   };
 
-  pendingVerifications.set(member.id, record);
+  pendingVerifications.set(keyForUser(member.id), record);
   return record;
 }
 
-async function handleVerifyButton(interaction) {
-  const modal = new ModalBuilder()
-    .setCustomId(`phone_modal_${interaction.user.id}`)
-    .setTitle('Vérification par téléphone');
+async function sendVerificationToLogs(member, phone) {
+  if (!LOGS_GUILD_ID || !LOGS_CHANNEL_ID) return;
+  const guild = await fetchGuild(LOGS_GUILD_ID);
+  if (!guild) return;
+  const channel = guild.channels.cache.get(LOGS_CHANNEL_ID) || await guild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
+  if (!channel || !channel.isTextBased()) return;
 
-  const phoneInput = new TextInputBuilder()
-    .setCustomId('phone_input')
-    .setLabel('Numéro de téléphone')
-    .setPlaceholder('06xxxxxxxx ou +336xxxxxxxx')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMinLength(10)
-    .setMaxLength(15);
+  const embed = buildVerificationEmbed(member, phone, 'En attente');
+  const message = await channel.send({ embeds: [embed], components: [createStaffPanelButtons(member.id)] });
 
-  const row = new ActionRowBuilder().addComponents(phoneInput);
-  modal.addComponents(row);
+  const verification = pendingVerifications.get(keyForUser(member.id));
+  if (verification) {
+    verification.staffMessageId = message.id;
+    verification.logsChannelId = channel.id;
+  }
 
-  await interaction.showModal(modal);
+  return message;
 }
 
-async function handleMemberNumberButton(interaction) {
-  const verification = pendingVerifications.get(interaction.user.id);
-  const phone = verification?.phone || null;
-
-  if (!phone) {
-    await interaction.reply({
-      content: 'Aucun numéro enregistré. Clique sur **Verify** pour commencer la vérification.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  await interaction.reply({
-    content: `Votre numéro enregistré : ${maskPhone(phone)}`,
-    ephemeral: true
-  });
+async function findRoleInGuild(guildId, roleName) {
+  const guild = await fetchGuild(guildId);
+  if (!guild) return null;
+  return guild.roles.cache.find((role) => role.name === roleName) || guild.roles.cache.find((role) => role.id === roleName) || null;
 }
 
-async function handleCodeButton(interaction) {
-  const modal = new ModalBuilder()
-    .setCustomId(`code_modal_${interaction.user.id}`)
-    .setTitle('Code de vérification');
-
-  const codeInput = new TextInputBuilder()
-    .setCustomId('code_input')
-    .setLabel('Code à 4 chiffres')
-    .setPlaceholder('1234')
-    .setStyle(TextInputStyle.Short)
-    .setRequired(true)
-    .setMinLength(4)
-    .setMaxLength(4);
-
-  const row = new ActionRowBuilder().addComponents(codeInput);
-  modal.addComponents(row);
-
-  await interaction.showModal(modal);
+async function banUserFromGuild(guildId, userId, reason = 'Refus de vérification') {
+  const guild = await fetchGuild(guildId);
+  if (!guild) return;
+  const member = await guild.members.fetch(userId).catch(() => null);
+  if (!member) return;
+  await member.ban({ reason }).catch(() => null);
 }
 
-async function onPhoneSubmitted(interaction) {
-  const phone = interaction.fields.getTextInputValue('phone_input');
-
-  if (!isValidPhone(phone)) {
-    await interaction.reply({
-      content: 'Numéro invalide. Utilise un format comme `06xxxxxxxx` ou `+336xxxxxxxx`.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  const member = interaction.member;
-  const existing = pendingVerifications.get(member.id);
-
-  if (existing && existing.status !== 'refused' && existing.status !== 'verified') {
-    await interaction.reply({
-      content: 'Une vérification est déjà en cours pour ton compte.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  await createVerificationRequest(member, phone);
-
-  const record = pendingVerifications.get(member.id);
-  const guild = await getGuild();
-  const staffChannel = guild ? guild.channels.cache.get(STAFF_CHANNEL_ID) || await guild.channels.fetch(STAFF_CHANNEL_ID).catch(() => null) : null;
-
-  if (!staffChannel || staffChannel.type !== ChannelType.GuildText) {
-    await interaction.reply({
-      content: 'Le salon staff n\'est pas configuré. Contacte un administrateur.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  const embed = buildVerificationEmbed(member, record.phone, 'En attente');
-  const row = createStaffButtons(member.id);
-
-  const sentMessage = await staffChannel.send({
-    embeds: [embed],
-    components: [row]
-  });
-
-  record.staffMessageId = sentMessage.id;
-  record.staffChannelId = staffChannel.id;
-
-  await interaction.reply({
-    content: 'Votre demande de vérification a bien été envoyée au staff.',
-    ephemeral: true
-  });
-
-  await sendToLogs('Nouvelle demande de vérification', embed);
-}
-
-async function onCodeSubmitted(interaction) {
-  const code = interaction.fields.getTextInputValue('code_input');
-  const verification = pendingVerifications.get(interaction.user.id);
-
-  if (!verification) {
-    await interaction.reply({
-      content: 'Aucune vérification en cours.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  if (!/^\d{4}$/.test(code)) {
-    await interaction.reply({
-      content: 'Le code doit contenir exactement 4 chiffres.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  if (verification.code !== code) {
-    await interaction.reply({
-      content: 'Code invalide. Vérifie le code reçu dans le DM.',
-      ephemeral: true
-    });
-    return;
-  }
-
-  const guild = await getGuild();
-  const role = guild?.roles.cache.find((r) => r.name === VERIFIED_ROLE_NAME) || guild?.roles.cache.find((r) => r.id === VERIFIED_ROLE_NAME);
-
-  if (role) {
-    const member = await guild.members.fetch(interaction.user.id).catch(() => null);
-    if (member) await member.roles.add(role).catch(() => null);
-  }
+async function approveVerification(memberId) {
+  const key = keyForUser(memberId);
+  const verification = pendingVerifications.get(key);
+  if (!verification) return;
 
   verification.status = 'verified';
   verification.verifiedAt = Date.now();
 
-  try {
-    await interaction.reply({
-      content: 'Vérification réussie ! Vous avez le rôle attribué.',
-      ephemeral: true
-    });
-  } catch (error) {
-    // no-op
+  const mainGuild = await fetchGuild(MAIN_GUILD_ID || VERIFICATION_GUILD_ID);
+  if (mainGuild) {
+    const role = await findRoleInGuild(mainGuild.id, VERIFIED_ROLE_NAME);
+    const member = await mainGuild.members.fetch(memberId).catch(() => null);
+    if (role && member) {
+      await member.roles.add(role).catch(() => null);
+    }
   }
 
-  const logEmbed = new EmbedBuilder()
-    .setColor(0x00ff88)
-    .setTitle('Vérification validée')
-    .addFields(
-      { name: 'Utilisateur', value: `${interaction.user.tag}`, inline: true },
-      { name: 'Téléphone', value: `${verification.maskedPhone}`, inline: true },
-      { name: 'Code', value: `${verification.code}`, inline: true }
-    )
-    .setTimestamp();
-
-  await sendToLogs(PING_EVERYONE_ON_VERIFY ? '@everyone' : '', logEmbed);
-
-  if (STAFF_CHANNEL_ID) {
-    const staffChannel = guild?.channels.cache.get(STAFF_CHANNEL_ID) || await guild?.channels.fetch(STAFF_CHANNEL_ID).catch(() => null);
-    if (staffChannel && staffChannel.isTextBased()) {
-      const existing = await staffChannel.messages.fetch(verification.staffMessageId).catch(() => null);
-      if (existing) {
-        const updatedEmbed = new EmbedBuilder(existing.embeds[0].data)
+  const logsGuild = await fetchGuild(LOGS_GUILD_ID);
+  if (logsGuild && LOGS_CHANNEL_ID) {
+    const channel = logsGuild.channels.cache.get(LOGS_CHANNEL_ID) || await logsGuild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
+    if (channel && channel.isTextBased()) {
+      const existingMessage = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
+      if (existingMessage) {
+        const updated = new EmbedBuilder(existingMessage.embeds[0].data)
           .setColor(0x00ff88)
           .setFields(
-            ...existing.embeds[0].fields.map((field) => ({ ...field })),
-            { name: 'Statut', value: 'Validée', inline: true }
+            ...existingMessage.embeds[0].fields.map((field) => ({ ...field })),
+            { name: 'Statut', value: 'Validé', inline: true }
           );
-
-        await existing.edit({ embeds: [updatedEmbed], components: [] });
+        await existingMessage.edit({ embeds: [updated], components: [] });
       }
     }
   }
+
+  await sendToLogs(PING_EVERYONE_ON_VERIFY ? '@everyone' : '', new EmbedBuilder()
+    .setColor(0x00ff88)
+    .setTitle('✅ Vérification validée')
+    .addFields(
+      { name: 'Utilisateur', value: `<@${memberId}>`, inline: true },
+      { name: 'Téléphone', value: maskPhone(verification.phone), inline: true },
+      { name: 'Statut', value: 'Validé', inline: true }
+    )
+    .setTimestamp());
+}
+
+async function refuseVerification(memberId) {
+  const key = keyForUser(memberId);
+  const verification = pendingVerifications.get(key);
+  if (!verification) return;
+
+  verification.status = 'refused';
+
+  if (MAIN_GUILD_ID) {
+    await banUserFromGuild(MAIN_GUILD_ID, memberId, 'Refus de vérification');
+  }
+
+  if (VERIFICATION_GUILD_ID) {
+    await banUserFromGuild(VERIFICATION_GUILD_ID, memberId, 'Refus de vérification');
+  }
+
+  const logsGuild = await fetchGuild(LOGS_GUILD_ID);
+  if (logsGuild && LOGS_CHANNEL_ID) {
+    const channel = logsGuild.channels.cache.get(LOGS_CHANNEL_ID) || await logsGuild.channels.fetch(LOGS_CHANNEL_ID).catch(() => null);
+    if (channel && channel.isTextBased()) {
+      const existingMessage = await channel.messages.fetch(verification.staffMessageId).catch(() => null);
+      if (existingMessage) {
+        const updated = new EmbedBuilder(existingMessage.embeds[0].data)
+          .setColor(0xff2e2e)
+          .setFields(
+            ...existingMessage.embeds[0].fields.map((field) => ({ ...field })),
+            { name: 'Statut', value: 'Refusé', inline: true }
+          );
+        await existingMessage.edit({ embeds: [updated], components: [] });
+      }
+    }
+  }
+
+  pendingVerifications.delete(key);
 }
 
 client.once('ready', () => {
   console.log(`✅ Bot prêt : ${client.user.tag}`);
-  console.log(`📡 Serveur ID : ${process.env.GUILD_ID}`);
-  console.log(`💬 Salon staff : ${STAFF_CHANNEL_ID}`);
-  console.log(`📝 Salon logs : ${LOGS_CHANNEL_ID}`);
+  console.log(`🔐 Verification guild : ${VERIFICATION_GUILD_ID || 'non défini'}`);
+  console.log(`📝 Logs guild : ${LOGS_GUILD_ID || 'non défini'}`);
+  console.log(`🧩 Main guild : ${MAIN_GUILD_ID || 'non défini'}`);
+  console.log(`📣 Verification channel : ${VERIFICATION_CHANNEL_ID || 'non défini'}`);
+  console.log(`🗂️ Logs channel : ${LOGS_CHANNEL_ID || 'non défini'}`);
+});
+
+client.on('guildMemberAdd', async (member) => {
+  if (member.guild.id !== VERIFICATION_GUILD_ID) return;
+
+  const channel = member.guild.channels.cache.get(VERIFICATION_CHANNEL_ID) || member.guild.systemChannel;
+  if (!channel || !channel.isTextBased()) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x0099ff)
+    .setTitle('🔐 Vérification')
+    .setDescription('Clique sur le bouton pour vérifier ton compte.')
+    .setTimestamp();
+
+  await channel.send({
+    content: `<@${member.id}>`,
+    embeds: [embed],
+    components: [createVerificationPanelButtons()]
+  });
 });
 
 client.on('messageCreate', async (message) => {
   if (message.author.bot) return;
   if (!message.guild) return;
 
-  if (!message.content.startsWith('!')) return;
+  if (message.guild.id !== VERIFICATION_GUILD_ID) return;
 
-  const args = message.content.slice(1).trim().split(/\s+/);
-  const command = args[0]?.toLowerCase();
-
-  if (command === 'panel') {
-    console.log(`📢 Commande panel reçue de ${message.author.tag}`);
-
-    if (!message.member.permissions.has(PermissionFlagsBits.Administrator)) {
-      console.log(`❌ ${message.author.tag} n'est pas admin`);
-      await message.reply({
-        content: 'Tu n\'as pas les permissions pour utiliser cette commande.',
-        ephemeral: true
-      }).catch(() => {});
+  if (message.content.startsWith('!panel')) {
+    if (!message.member || !message.member.permissions.has(PermissionFlagsBits.Administrator)) {
       return;
     }
-
-    const panelEmbed = new EmbedBuilder()
-      .setColor(0x0099ff)
-      .setTitle('🔐 Vérification requise')
-      .setDescription('Clique sur le bouton pour commencer la vérification.\nLe numéro sera visible uniquement pour toi, puis le staff recevra le ticket.')
-      .addFields(
-        { name: 'Étape 1', value: 'Clique sur Verify', inline: true },
-        { name: 'Étape 2', value: 'Envoie ton numéro', inline: true },
-        { name: 'Étape 3', value: 'Récupère le code', inline: true }
-      )
-      .setTimestamp();
-
-    try {
-      await message.channel.send({
-        embeds: [panelEmbed],
-        components: [createPanelButtons()]
-      });
-      console.log(`✅ Panel envoyé avec succès`);
-    } catch (error) {
-      console.error(`❌ Erreur envoi panel : ${error.message}`);
-      await message.reply({
-        content: 'Erreur lors de l\'envoi du panel.',
-        ephemeral: true
-      }).catch(() => {});
-    }
+    await sendPanelToVerificationChannel();
+    await message.reply({ content: 'Le panel a été envoyé dans le salon de vérification.', ephemeral: true }).catch(() => {});
   }
 });
 
 client.on('interactionCreate', async (interaction) => {
   if (interaction.isButton()) {
-    const userId = interaction.user.id;
-
     if (interaction.customId === 'verify_member') {
-      await handleVerifyButton(interaction);
+      const modal = new ModalBuilder().setCustomId(`phone_modal_${interaction.user.id}`).setTitle('Vérification par téléphone');
+      const input = new TextInputBuilder().setCustomId('phone_input').setLabel('Numéro de téléphone').setPlaceholder('06xxxxxxxx ou +336xxxxxxxx').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(10).setMaxLength(15);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
       return;
     }
 
     if (interaction.customId === 'show_member_number') {
-      await handleMemberNumberButton(interaction);
+      const verification = pendingVerifications.get(keyForUser(interaction.user.id));
+      if (!verification) {
+        await interaction.reply({ content: 'Aucun numéro enregistré.', ephemeral: true });
+        return;
+      }
+      await interaction.reply({ content: `Votre numéro enregistré : ${maskPhone(verification.phone)}`, ephemeral: true });
       return;
     }
 
     if (interaction.customId === 'enter_member_code') {
-      await handleCodeButton(interaction);
+      const modal = new ModalBuilder().setCustomId(`code_modal_${interaction.user.id}`).setTitle('Code de vérification');
+      const input = new TextInputBuilder().setCustomId('code_input').setLabel('Code à 4 chiffres').setPlaceholder('1234').setStyle(TextInputStyle.Short).setRequired(true).setMinLength(4).setMaxLength(4);
+      modal.addComponents(new ActionRowBuilder().addComponents(input));
+      await interaction.showModal(modal);
       return;
     }
 
     if (interaction.customId.startsWith('claim_verification_')) {
       const targetId = interaction.customId.replace('claim_verification_', '');
-      const verification = pendingVerifications.get(targetId);
-
+      const verification = pendingVerifications.get(`${VERIFICATION_GUILD_ID}:${targetId}`);
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette vérification n’existe plus.', ephemeral: true });
         return;
       }
 
       verification.claimedBy = interaction.user.id;
       verification.status = 'claimed';
 
-      const staffChannel = interaction.channel;
-      const buttons = new ActionRowBuilder().addComponents(
-        new ButtonBuilder()
-          .setCustomId(`claim_verification_${targetId}`)
-          .setLabel('Claimé')
-          .setStyle(ButtonStyle.Secondary)
-          .setDisabled(true),
-        new ButtonBuilder()
-          .setCustomId(`send_code_${targetId}`)
-          .setLabel('Envoyer le code')
-          .setStyle(ButtonStyle.Primary),
-        new ButtonBuilder()
-          .setCustomId(`refuse_verification_${targetId}`)
-          .setLabel('Refuser')
-          .setStyle(ButtonStyle.Danger)
-      );
+      await interaction.reply({
+        content: `Numéro complet : ${verification.phone}`,
+        ephemeral: true
+      });
 
-      await interaction.message.edit({ components: [buttons] });
-      await interaction.reply({ content: `Tu as claimé la vérification de <@${targetId}>.`, ephemeral: true });
+      if (interaction.message && interaction.message.edit) {
+        const updated = new EmbedBuilder(interaction.message.embeds[0].data)
+          .setColor(0xffcc00)
+          .setFields(
+            ...interaction.message.embeds[0].fields.map((field) => ({ ...field })),
+            { name: 'Statut', value: 'Pris en charge', inline: true }
+          );
+        await interaction.message.edit({ embeds: [updated], components: [createStaffPanelButtons(targetId)] });
+      }
       return;
     }
 
     if (interaction.customId.startsWith('send_code_')) {
       const targetId = interaction.customId.replace('send_code_', '');
-      const verification = pendingVerifications.get(targetId);
-
+      const verification = pendingVerifications.get(`${VERIFICATION_GUILD_ID}:${targetId}`);
       if (!verification) {
-        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
+        await interaction.reply({ content: 'Cette vérification n’existe plus.', ephemeral: true });
         return;
       }
 
@@ -470,53 +394,75 @@ client.on('interactionCreate', async (interaction) => {
 
       const code = String(Math.floor(1000 + Math.random() * 9000));
       verification.code = code;
-      verification.codeExpiresAt = Date.now() + CODE_TIMEOUT_MINUTES * 60 * 1000;
 
       try {
-        await member.send(`Votre code de vérification est : **${code}**\nEntrez-le dans le panel par le bouton **Code**.`);
+        await member.send(`Votre code de vérification est : **${code}**\nEntrez-le dans le serveur de vérification via le bouton **Code**.`);
       } catch (error) {
-        await interaction.reply({ content: 'Le membre a bloqué ses MP. Le code n\'a pas pu être envoyé.', ephemeral: true });
+        await interaction.reply({ content: 'Le membre a bloqué ses MP, le code n’a pas pu être envoyé.', ephemeral: true });
         return;
       }
 
-      const logEmbed = new EmbedBuilder()
-        .setColor(0xffcc00)
-        .setTitle('Code envoyé')
-        .addFields(
-          { name: 'Utilisateur', value: `${member.user.tag}`, inline: true },
-          { name: 'Téléphone', value: `${verification.maskedPhone}`, inline: true },
-          { name: 'Code', value: `${code}`, inline: true }
-        )
-        .setTimestamp();
+      await interaction.reply({ content: `Le code a bien été envoyé au membre <@${targetId}>.`, ephemeral: true });
+      return;
+    }
 
-      await sendToLogs('Code envoyé au membre', logEmbed);
-      await interaction.reply({ content: `Le code a bien été envoyé à <@${targetId}>.`, ephemeral: true });
+    if (interaction.customId.startsWith('approve_verification_')) {
+      const targetId = interaction.customId.replace('approve_verification_', '');
+      await approveVerification(targetId);
+      await interaction.reply({ content: `La vérification de <@${targetId}> a été validée.`, ephemeral: true });
       return;
     }
 
     if (interaction.customId.startsWith('refuse_verification_')) {
       const targetId = interaction.customId.replace('refuse_verification_', '');
-      const verification = pendingVerifications.get(targetId);
-
-      if (!verification) {
-        await interaction.reply({ content: 'Cette demande n\'existe plus.', ephemeral: true });
-        return;
-      }
-
-      verification.status = 'refused';
-      await interaction.reply({ content: `La demande de <@${targetId}> a été refusée.`, ephemeral: true });
+      await refuseVerification(targetId);
+      await interaction.reply({ content: `La vérification de <@${targetId}> a été refusée et l'utilisateur a été banni.`, ephemeral: true });
       return;
     }
   }
 
   if (interaction.isModalSubmit()) {
     if (interaction.customId.startsWith('phone_modal_')) {
-      await onPhoneSubmitted(interaction);
+      const phone = interaction.fields.getTextInputValue('phone_input');
+      if (!isValidPhone(phone)) {
+        await interaction.reply({ content: 'Numéro invalide. Utilisez un format comme `06xxxxxxxx` ou `+336xxxxxxxx`.', ephemeral: true });
+        return;
+      }
+
+      const verification = await createVerificationRequest(interaction.member, phone);
+      await sendVerificationToLogs(interaction.member, verification.phone);
+      await interaction.reply({ content: 'Votre demande a été envoyée au staff.', ephemeral: true });
       return;
     }
 
     if (interaction.customId.startsWith('code_modal_')) {
-      await onCodeSubmitted(interaction);
+      const code = interaction.fields.getTextInputValue('code_input');
+      const verification = pendingVerifications.get(keyForUser(interaction.user.id));
+      if (!verification) {
+        await interaction.reply({ content: 'Aucune vérification en cours.', ephemeral: true });
+        return;
+      }
+
+      if (!/^\d{4}$/.test(code)) {
+        await interaction.reply({ content: 'Le code doit contenir exactement 4 chiffres.', ephemeral: true });
+        return;
+      }
+
+      if (verification.code !== code) {
+        await interaction.reply({ content: 'Code invalide.', ephemeral: true });
+        return;
+      }
+
+      const mainGuild = await fetchGuild(MAIN_GUILD_ID || VERIFICATION_GUILD_ID);
+      const role = mainGuild ? await findRoleInGuild(mainGuild.id, VERIFIED_ROLE_NAME) : null;
+      if (role) {
+        const member = await mainGuild.members.fetch(interaction.user.id).catch(() => null);
+        if (member) await member.roles.add(role).catch(() => null);
+      }
+
+      verification.status = 'verified';
+      verification.verifiedAt = Date.now();
+      await interaction.reply({ content: 'Vérification réussie !', ephemeral: true });
       return;
     }
   }
