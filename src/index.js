@@ -86,7 +86,7 @@ function createVerificationButtons() {
 function createStaffButtons(userId) {
   return new ActionRowBuilder().addComponents(
     new ButtonBuilder().setCustomId(`claim_verification_${userId}`).setLabel('Prendre en charge').setStyle(ButtonStyle.Primary),
-    new ButtonBuilder().setCustomId(`send_code_${userId}`).setLabel('Code').setStyle(ButtonStyle.Secondary),
+    new ButtonBuilder().setCustomId(`request_code_${userId}`).setLabel('Code').setStyle(ButtonStyle.Secondary),
     new ButtonBuilder().setCustomId(`approve_verification_${userId}`).setLabel('Valider').setStyle(ButtonStyle.Success),
     new ButtonBuilder().setCustomId(`refuse_verification_${userId}`).setLabel('Refuser').setStyle(ButtonStyle.Danger)
   );
@@ -136,7 +136,8 @@ async function createVerificationRequest(member, phone) {
     claimedBy: null,
     staffMessageId: null,
     createdAt: Date.now(),
-    verifiedAt: null
+    verifiedAt: null,
+    codeRequested: false
   };
 
   pendingVerifications.set(getKey(member.id), record);
@@ -190,6 +191,10 @@ async function updateStaffPanelStatus(memberId, status, color) {
 async function approveVerification(memberId) {
   const verification = pendingVerifications.get(getKey(memberId));
   if (!verification) return false;
+
+  if (!verification.enteredCode || !verification.code) {
+    return false;
+  }
 
   if (verification.enteredCode !== verification.code) {
     return false;
@@ -255,6 +260,27 @@ async function refuseVerification(memberId) {
   pendingVerifications.delete(getKey(memberId));
 }
 
+async function requestCodeForMember(memberId) {
+  const verification = pendingVerifications.get(getKey(memberId));
+  if (!verification) return false;
+
+  verification.codeRequested = true;
+  verification.code = null;
+  verification.enteredCode = null;
+
+  const guild = await fetchGuild();
+  if (!guild) return false;
+
+  const channel = await getVerificationChannel();
+  if (!channel || !channel.isTextBased()) return false;
+
+  await channel.send({
+    content: `<@${memberId}> : entre un code à 4 chiffres dans ce salon pour la vérification.`
+  });
+
+  return true;
+}
+
 async function sendToLogs(embed) {
   const channel = await getLogsChannel();
   if (!channel || !channel.isTextBased()) return;
@@ -301,13 +327,14 @@ client.on('messageCreate', async (message) => {
   if (message.channel.id !== VERIFICATION_CHANNEL_ID) return;
 
   const verification = pendingVerifications.get(getKey(message.author.id));
-  if (!verification || !verification.code) return;
+  if (!verification) return;
 
-  if (!/^\d{4}$/.test(message.content.trim())) return;
-
-  verification.enteredCode = message.content.trim();
-
-  await message.reply({ content: 'Votre code a bien été reçu. Un staff va maintenant valider votre vérification.' });
+  if (verification.codeRequested && /^\d{4}$/.test(message.content.trim())) {
+    verification.code = message.content.trim();
+    verification.enteredCode = message.content.trim();
+    await message.reply({ content: 'Votre code a bien été enregistré. Un staff va maintenant valider votre vérification.' });
+    return;
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -348,8 +375,8 @@ client.on('interactionCreate', async (interaction) => {
       return;
     }
 
-    if (interaction.customId.startsWith('send_code_')) {
-      const targetId = interaction.customId.replace('send_code_', '');
+    if (interaction.customId.startsWith('request_code_')) {
+      const targetId = interaction.customId.replace('request_code_', '');
       const verification = pendingVerifications.get(getKey(targetId));
       if (!verification) {
         await interaction.reply({ content: 'Cette demande n’existe plus.', ephemeral: true });
@@ -362,23 +389,21 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const code = String(Math.floor(1000 + Math.random() * 9000)).padStart(4, '0');
-      verification.code = code;
+      verification.codeRequested = true;
+      verification.code = null;
       verification.enteredCode = null;
 
-      try {
-        await member.send(`Votre code de vérification est : **${code}**\nRendez-vous dans le salon #verification et écrivez ce code.`);
-      } catch (error) {
-        await interaction.reply({ content: 'Le membre a bloqué ses MP, impossible d’envoyer le code.', ephemeral: true });
-        return;
+      const channel = await getVerificationChannel();
+      if (channel && channel.isTextBased()) {
+        await channel.send({
+          content: `<@${targetId}> : entre un code à 4 chiffres dans ce salon pour confirmer ta vérification.`
+        });
       }
 
-      const verificationChannel = await getVerificationChannel();
-      if (verificationChannel && verificationChannel.isTextBased()) {
-        await verificationChannel.send({ content: `<@${targetId}> : entre le code à 4 chiffres que tu as reçu en MP.` }).catch(() => {});
-      }
-
-      await interaction.reply({ content: `Le code a bien été envoyé à <@${targetId}>.`, ephemeral: true });
+      await interaction.reply({
+        content: `Le membre <@${targetId}> doit maintenant entrer un code à 4 chiffres dans le salon #verification.`,
+        ephemeral: true
+      });
       return;
     }
 
@@ -387,7 +412,7 @@ client.on('interactionCreate', async (interaction) => {
       const isValid = await approveVerification(targetId);
 
       if (!isValid) {
-        await interaction.reply({ content: 'Le code est incorrect. Le membre doit d’abord envoyer le bon code.', ephemeral: true });
+        await interaction.reply({ content: 'Le code est incorrect ou pas encore saisi par le membre.', ephemeral: true });
         return;
       }
 
