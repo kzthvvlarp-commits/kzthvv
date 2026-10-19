@@ -47,7 +47,8 @@ const CONTENU_BOOST_CHANNEL_ID = process.env.CONTENU_BOOST_CHANNEL_ID || null;
 const CONTENU_INVITE_CHANNEL_ID = process.env.CONTENU_INVITE_CHANNEL_ID || null;
 
 const CROWN_ROLE_NAME = process.env.CROWN_ROLE_NAME || '👑';
-const STAR_ROLE_NAME = process.env.STAR_ROLE_NAME || '⭐️ Vérifier';
+const STAR_ROLE_NAME = process.env.STAR_ROLE_NAME || '⭐️';
+const VERIFY_ROLE_NAME = process.env.VERIFY_ROLE_NAME || 'Vérifier';
 const BOOSTER_ROLE_NAME = process.env.BOOSTER_ROLE_NAME || '🔋';
 const INVITE_ROLE_NAME = process.env.INVITE_ROLE_NAME || '📤';
 const PENDING_ROLE_NAME = process.env.PENDING_ROLE_NAME || '⏳ En attente';
@@ -56,7 +57,6 @@ const REQUIRED_PHONE_DIGITS = Number(process.env.REQUIRED_PHONE_DIGITS || 10);
 const PROOF_TIMEOUT_MINUTES = Number(process.env.PROOF_TIMEOUT_MINUTES || 10);
 
 const pendingVerifications = new Map();
-const proofPendingMembers = new Map();
 
 function normalizePhone(rawPhone) {
   return String(rawPhone || '').replace(/\s+/g, '').replace(/-/g, '').replace(/\./g, '');
@@ -249,7 +249,7 @@ async function updateLogsPanel(memberId, statusText, statusColor) {
   await message.edit({ embeds: [updated], components: buttons });
 }
 
-async function sendCodePanelToVerification(memberId, claimedBy) {
+async function sendCodePanelToVerification(memberId) {
   const channel = await getChannel(VERIFICATION_CHANNEL_ID);
   if (!channel || !channel.isTextBased()) return;
 
@@ -352,10 +352,10 @@ async function approveVerification(memberId) {
     await member.roles.remove(pendingRole).catch(() => null);
   }
 
-  // Ajouter le rôle "⭐️ Vérifier"
-  const starRole = await findRole(guild, STAR_ROLE_NAME);
-  if (starRole) {
-    await member.roles.add(starRole).catch(() => null);
+  // Ajouter le rôle "Vérifier"
+  const verifyRole = await findRole(guild, VERIFY_ROLE_NAME);
+  if (verifyRole) {
+    await member.roles.add(verifyRole).catch(() => null);
   }
 
   await updateLogsPanel(memberId, '✅ Validé', 0x00ff88);
@@ -447,7 +447,7 @@ client.on('interactionCreate', async (interaction) => {
       if (verificationChannel) {
         await interaction.reply({
           content: `Clique [ici](https://discord.com/channels/${GUILD_ID}/${VERIFICATION_CHANNEL_ID}) pour aller à la vérification`,
-          ephemeral: true
+ephemeral: true
         });
       }
       return;
@@ -480,7 +480,7 @@ client.on('interactionCreate', async (interaction) => {
       }
 
       verification.status = 'code_requested';
-      await sendCodePanelToVerification(targetId, interaction.user.id);
+      await sendCodePanelToVerification(targetId);
 
       await interaction.reply({ content: `✅ Panel de code envoyé dans #verification`, ephemeral: true });
       return;
