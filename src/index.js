@@ -190,7 +190,8 @@ async function sendVerificationPanel(member) {
   const message = await channel.send({
     content: `<@${member.id}>`,
     embeds: [embed],
-    components: [createVerifyButton()]
+    components: [createVerifyButton()],
+    flags: 64
   });
 
   return message;
@@ -271,13 +272,20 @@ async function sendCodePanelToVerification(memberId) {
   );
 
   const message = await channel.send({
+    content: `<@${memberId}>`,
     embeds: [embed],
-    components: [row]
+    components: [row],
+    flags: 64
   });
 
   const verification = pendingVerifications.get(getKey(memberId));
   if (verification) {
     verification.verificationPanelMessageId = message.id;
+    
+    // Auto-supprimer après 5 minutes
+    setTimeout(() => {
+      message.delete().catch(() => null);
+    }, 5 * 60 * 1000);
   }
 }
 
