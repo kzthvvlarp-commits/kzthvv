@@ -2,10 +2,10 @@
   "name": "kzthvv",
   "version": "1.0.0",
   "description": "Bot Discord de vérification par numéro avec salon staff, codes et rôle automatique",
-  "main": "index.js",
+  "main": "src/index.js",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
+    "start": "node src/index.js",
+    "dev": "node src/index.js"
   },
   "engines": {
     "node": ">=18"
