@@ -1,0 +1,18 @@
+# Node modules
+node_modules/
+
+# Environment
+.env
+.env.*
+
+# Logs
+npm-debug.log*
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Docker build cache
+.docker/
